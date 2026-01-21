@@ -30,13 +30,13 @@ function parseOutageSchedule(data, group) {
     return null;
   }
   
-  // Find the specific group
-  const groupData = data.groups[group];
-  
-  if (!groupData) {
+  // Safely check if the group exists to prevent prototype pollution
+  if (!Object.prototype.hasOwnProperty.call(data.groups, group)) {
     console.log(`Group ${group} not found`);
     return null;
   }
+  
+  const groupData = data.groups[group];
   
   return {
     region: data.region || 'Unknown',

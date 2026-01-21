@@ -100,7 +100,20 @@ async function exportHistoryToCSV() {
   const csvLines = ['Time,Event,Duration (ms),Duration Formatted'];
   
   for (const entry of history.history) {
-    csvLines.push(`${entry.time},${entry.event},${entry.duration},${entry.duration_formatted}`);
+    // Properly escape CSV values
+    const escapeCSV = (value) => {
+      if (value === null || value === undefined) return '';
+      const stringValue = String(value);
+      // If value contains comma, quote, or newline, wrap in quotes and escape quotes
+      if (stringValue.includes(',') || stringValue.includes('"') || stringValue.includes('\n')) {
+        return `"${stringValue.replace(/"/g, '""')}"`;
+      }
+      return stringValue;
+    };
+    
+    csvLines.push(
+      `${escapeCSV(entry.time)},${escapeCSV(entry.event)},${escapeCSV(entry.duration)},${escapeCSV(entry.duration_formatted)}`
+    );
   }
   
   const csvContent = csvLines.join('\n');
@@ -221,7 +234,12 @@ IP для моніторингу: <code>${config.ip}</code>
       
       const csvContent = await exportHistoryToCSV();
       
-      await bot.sendDocument(chatId, 'light-history.csv', {
+      // Send CSV content as a buffer instead of relying on file path
+      const buffer = Buffer.from(csvContent, 'utf8');
+      await bot.sendDocument(chatId, buffer, {
+        filename: 'light-history.csv',
+        contentType: 'text/csv'
+      }, {
         caption: `📊 Експорт історії змін світла\n\nВсього записів: ${history.history.length}`
       });
     } catch (error) {

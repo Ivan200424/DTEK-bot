@@ -85,6 +85,14 @@ function formatTime(date) {
 
 async function checkPing() {
   try {
+    // Validate IP address format to prevent command injection
+    const ipRegex = /^(?:(?:25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\.){3}(?:25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)$/;
+    
+    if (!ipRegex.test(config.ip)) {
+      console.error('Invalid IP address format:', config.ip);
+      return false;
+    }
+    
     const res = await ping.promise.probe(config.ip, {
       timeout: config.ping_timeout || 5,
       extra: ['-c', '1']
@@ -162,7 +170,20 @@ async function exportHistoryToCSV() {
   const csvLines = ['Time,Event,Duration (ms),Duration Formatted'];
   
   for (const entry of history.history) {
-    csvLines.push(`${entry.time},${entry.event},${entry.duration},${entry.duration_formatted}`);
+    // Properly escape CSV values
+    const escapeCSV = (value) => {
+      if (value === null || value === undefined) return '';
+      const stringValue = String(value);
+      // If value contains comma, quote, or newline, wrap in quotes and escape quotes
+      if (stringValue.includes(',') || stringValue.includes('"') || stringValue.includes('\n')) {
+        return `"${stringValue.replace(/"/g, '""')}"`;
+      }
+      return stringValue;
+    };
+    
+    csvLines.push(
+      `${escapeCSV(entry.time)},${escapeCSV(entry.event)},${escapeCSV(entry.duration)},${escapeCSV(entry.duration_formatted)}`
+    );
   }
   
   const csvContent = csvLines.join('\n');
