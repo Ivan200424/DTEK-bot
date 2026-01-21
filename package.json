@@ -1,11 +1,11 @@
 {
   "name": "dtek-bot",
-  "version": "1.0.0",
-  "description": "Telegram bot for monitoring power availability in Ukraine",
-  "main": "index.js",
+  "version": "2.0.0",
+  "description": "GraphenkoBot - Telegram bot for monitoring outage schedules in Ukraine",
+  "type": "module",
+  "main": "index.mjs",
   "scripts": {
-    "start": "node index.js",
-    "bot": "node bot.js",
+    "start": "node index.mjs",
     "test": "echo \"No tests specified\" && exit 0"
   },
   "keywords": [
@@ -13,14 +13,11 @@
     "bot",
     "power",
     "monitoring",
-    "ukraine"
+    "ukraine",
+    "graphenko",
+    "outage"
   ],
   "author": "",
   "license": "MIT",
-  "dependencies": {
-    "dotenv": "^16.4.5",
-    "node-telegram-bot-api": "^0.66.0",
-    "node-fetch": "^2.7.0",
-    "ping": "^0.4.4"
-  }
+  "dependencies": {}
 }
