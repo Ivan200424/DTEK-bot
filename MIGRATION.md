@@ -90,7 +90,7 @@ node index.mjs
   "group": "3.1",
   "ping_interval": 60000,
   "ping_timeout": 5,
-  "bot_token": "8437419933:AAG..." // ❌ EXPOSED
+  "bot_token": "1234567890:ABC..." // ❌ EXPOSED
 }
 ```
 
