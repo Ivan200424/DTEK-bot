@@ -3,6 +3,7 @@ const ping = require('ping');
 const fs = require('fs').promises;
 const fetch = require('node-fetch');
 const path = require('path');
+const { checkForScheduleUpdates } = require('./outage-monitor');
 
 // Load configuration
 let config;
@@ -194,6 +195,16 @@ async function main() {
   
   // Check status once
   await checkLightStatus();
+  
+  // Check for outage schedule updates
+  console.log('Checking for outage schedule updates...');
+  const scheduleUpdate = await checkForScheduleUpdates(config);
+  
+  if (scheduleUpdate && scheduleUpdate.hasChanged) {
+    console.log('Outage schedule has changed!');
+    const message = `📅 <b>Оновлено графік відключень</b>\n\n${scheduleUpdate.message}`;
+    await sendTelegramMessage(message);
+  }
   
   console.log('Bot execution completed');
 }

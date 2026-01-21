@@ -5,6 +5,7 @@
   "main": "index.js",
   "scripts": {
     "start": "node index.js",
+    "bot": "node bot.js",
     "test": "echo \"No tests specified\" && exit 0"
   },
   "keywords": [
