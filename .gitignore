@@ -10,6 +10,10 @@ npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
 
+# Auto-generated files
+light-history.csv
+outage-schedule.json
+
 # OS
 .DS_Store
 Thumbs.db

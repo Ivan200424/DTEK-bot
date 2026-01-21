@@ -131,8 +131,11 @@ on:
 # Встановити залежності
 npm install
 
-# Встановити змінну оточення
-export TELEGRAM_BOT_TOKEN="your_bot_token_here"
+# Скопіювати приклад .env файлу
+cp .env.example .env
+
+# Відредагувати .env та додати ваш TELEGRAM_BOT_TOKEN
+nano .env
 
 # Запустити інтерактивного бота
 npm run bot
@@ -170,6 +173,7 @@ DTEK-bot/
 ├── light-history.json        # Історія змін (автоматично)
 ├── outage-schedule.json      # Збережений графік (автоматично)
 ├── light-history.csv         # Експорт історії (опціонально)
+├── .env.example              # Приклад файлу змінних оточення
 ├── .gitignore               # Ігноровані файли
 └── README.md                # Ця документація
 ```

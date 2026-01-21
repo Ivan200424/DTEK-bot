@@ -5,6 +5,13 @@ const fetch = require('node-fetch');
 const path = require('path');
 const { checkForScheduleUpdates } = require('./outage-monitor');
 
+// Load environment variables from .env file if it exists
+try {
+  require('dotenv').config();
+} catch (error) {
+  // dotenv not available, using environment variables
+}
+
 // Load configuration
 let config;
 let history;

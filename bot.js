@@ -3,6 +3,13 @@ const fs = require('fs').promises;
 const path = require('path');
 const { getOutageSchedule } = require('./outage-monitor');
 
+// Load environment variables from .env file if it exists
+try {
+  require('dotenv').config();
+} catch (error) {
+  // dotenv not available, using environment variables
+}
+
 // Load configuration and history
 let config;
 let history;
