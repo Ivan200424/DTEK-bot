@@ -3,7 +3,19 @@
     "-1003523279109": {
       "message_id": 6,
       "image_url": "https://raw.githubusercontent.com/Baskerville42/outage-data-ua/refs/heads/main/images/kyiv/gpv-3-1-emergency.png",
-      "caption": "⚡️ Графік стабілізаційних вимкнень. Це повідомлення оновлюється щогодини автоматично."
+      "caption": "⚡️ Графік стабілізаційних вимкнень. Це повідомлення оновлюється щогодини автоматично.",
+      "monitor_host": "93.127.118.86",
+      "monitor_port": 443,
+      "monitor_interval_sec": 30,
+      "monitor_enabled": true
+    }
+  },
+  {
+    "1026177113": {
+      "monitor_host": "93.127.118.86",
+      "monitor_port": 443,
+      "monitor_interval_sec": 30,
+      "monitor_enabled": true
     }
   }
 ]
