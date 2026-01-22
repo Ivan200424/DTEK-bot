@@ -6,6 +6,7 @@
   "main": "index.mjs",
   "scripts": {
     "start": "node index.mjs",
+    "monitor": "node monitor-worker.mjs",
     "test": "echo \"No tests specified\" && exit 0"
   },
   "keywords": [

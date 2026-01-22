@@ -30,6 +30,13 @@ export function loadMessageMapFromFile(filePath) {
           if (Object.prototype.hasOwnProperty.call(val, 'caption')) entry.caption = val.caption;
           if (val.welcome_message_id !== undefined) entry.welcome_message_id = val.welcome_message_id;
           if (val.message_thread_id !== undefined) entry.message_thread_id = val.message_thread_id;
+          // Monitor fields
+          if (val.monitor_host) entry.monitor_host = val.monitor_host;
+          if (val.monitor_port !== undefined) entry.monitor_port = val.monitor_port;
+          if (val.monitor_interval_sec !== undefined) entry.monitor_interval_sec = val.monitor_interval_sec;
+          if (val.monitor_last_status !== undefined) entry.monitor_last_status = val.monitor_last_status;
+          if (val.monitor_last_change !== undefined) entry.monitor_last_change = val.monitor_last_change;
+          if (val.monitor_enabled !== undefined) entry.monitor_enabled = val.monitor_enabled;
           map[chatId] = entry;
         } else {
           mapWasNormalized = true; // malformed value
@@ -49,6 +56,13 @@ export function loadMessageMapFromFile(filePath) {
         if (Object.prototype.hasOwnProperty.call(item, 'caption')) entry.caption = item.caption;
         if (item.welcome_message_id !== undefined) entry.welcome_message_id = item.welcome_message_id;
         if (item.message_thread_id !== undefined) entry.message_thread_id = item.message_thread_id;
+        // Monitor fields
+        if (item.monitor_host) entry.monitor_host = item.monitor_host;
+        if (item.monitor_port !== undefined) entry.monitor_port = item.monitor_port;
+        if (item.monitor_interval_sec !== undefined) entry.monitor_interval_sec = item.monitor_interval_sec;
+        if (item.monitor_last_status !== undefined) entry.monitor_last_status = item.monitor_last_status;
+        if (item.monitor_last_change !== undefined) entry.monitor_last_change = item.monitor_last_change;
+        if (item.monitor_enabled !== undefined) entry.monitor_enabled = item.monitor_enabled;
         map[chatId] = entry;
         mapWasNormalized = true; // we will rewrite to canonical
         continue;
@@ -78,6 +92,13 @@ export function saveMessageMapToFile(filePath, map) {
         if (Object.prototype.hasOwnProperty.call(map[k], 'caption')) entry.caption = map[k].caption;
         if (map[k].welcome_message_id !== undefined) entry.welcome_message_id = map[k].welcome_message_id;
         if (map[k].message_thread_id !== undefined) entry.message_thread_id = map[k].message_thread_id;
+        // Monitor fields
+        if (map[k].monitor_host) entry.monitor_host = map[k].monitor_host;
+        if (map[k].monitor_port !== undefined) entry.monitor_port = map[k].monitor_port;
+        if (map[k].monitor_interval_sec !== undefined) entry.monitor_interval_sec = map[k].monitor_interval_sec;
+        if (map[k].monitor_last_status !== undefined) entry.monitor_last_status = map[k].monitor_last_status;
+        if (map[k].monitor_last_change !== undefined) entry.monitor_last_change = map[k].monitor_last_change;
+        if (map[k].monitor_enabled !== undefined) entry.monitor_enabled = map[k].monitor_enabled;
       }
       return { [k]: entry };
     });
