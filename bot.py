@@ -28,8 +28,15 @@ CONFIG_FILE = 'graphenko-chats.json'
 DEFAULT_HOST = '93.127.118.86'
 DEFAULT_PORT = 443
 DEFAULT_INTERVAL = 30
+GRAPHENKO_UPDATE_INTERVAL = 300  # 5 minutes in seconds
 OUTAGE_IMAGES_BASE = 'https://raw.githubusercontent.com/Baskerville42/outage-data-ua/refs/heads/main/images/'
 DEFAULT_CAPTION = '⚡️ Графік стабілізаційних вімкнень. Це повідомлення оновлюється щогодини автоматично.'
+
+# Time unit constants
+MILLISECONDS_PER_SECOND = 1000
+SECONDS_PER_MINUTE = 60
+MINUTES_PER_HOUR = 60
+HOURS_PER_DAY = 24
 
 if not BOT_TOKEN:
     print('ERROR: BOT_TOKEN environment variable is required')
@@ -211,10 +218,10 @@ def get_kyiv_datetime() -> datetime:
 
 def format_duration(milliseconds: int) -> str:
     """Format duration in Ukrainian"""
-    seconds = milliseconds // 1000
-    minutes = seconds // 60
-    hours = minutes // 60
-    days = hours // 24
+    seconds = milliseconds // MILLISECONDS_PER_SECOND
+    minutes = seconds // SECONDS_PER_MINUTE
+    hours = minutes // MINUTES_PER_HOUR
+    days = hours // HOURS_PER_DAY
     
     def plural_days(n):
         if n % 10 == 1 and n % 100 != 11:
@@ -238,13 +245,13 @@ def format_duration(milliseconds: int) -> str:
         return 'хвилин'
     
     if days > 0:
-        remaining_hours = hours % 24
+        remaining_hours = hours % HOURS_PER_DAY
         if remaining_hours > 0:
             return f'{days} {plural_days(days)} {remaining_hours} {plural_hours(remaining_hours)}'
         return f'{days} {plural_days(days)}'
     
     if hours > 0:
-        remaining_minutes = minutes % 60
+        remaining_minutes = minutes % MINUTES_PER_HOUR
         if remaining_minutes > 0:
             return f'{hours} {plural_hours(hours)} {remaining_minutes} {plural_minutes(remaining_minutes)}'
         return f'{hours} {plural_hours(hours)}'
@@ -258,7 +265,7 @@ def format_duration(milliseconds: int) -> str:
 def send_status_notification(chat_id: str, new_status: str, last_change_time: int):
     """Send power status change notification"""
     current_time = get_kyiv_time()
-    duration = int(time.time() * 1000) - last_change_time
+    duration = int(time.time() * MILLISECONDS_PER_SECOND) - last_change_time
     formatted_duration = format_duration(duration)
     
     if new_status == 'online':
@@ -309,7 +316,7 @@ class MonitorThread(threading.Thread):
                     
                     # Detect state change
                     previous_status = settings.get('monitor_last_status')
-                    last_change = settings.get('monitor_last_change', int(time.time() * 1000))
+                    last_change = settings.get('monitor_last_change', int(time.time() * MILLISECONDS_PER_SECOND))
                     
                     if previous_status and previous_status != new_status:
                         # Status changed!
@@ -318,14 +325,14 @@ class MonitorThread(threading.Thread):
                         
                         # Update state
                         settings['monitor_last_status'] = new_status
-                        settings['monitor_last_change'] = int(time.time() * 1000)
+                        settings['monitor_last_change'] = int(time.time() * MILLISECONDS_PER_SECOND)
                         config[chat_id] = settings
                         save_config(config)
                     elif not previous_status:
                         # First check - initialize without notification
                         print(f'Initializing monitor state for {chat_id}: {new_status}')
                         settings['monitor_last_status'] = new_status
-                        settings['monitor_last_change'] = int(time.time() * 1000)
+                        settings['monitor_last_change'] = int(time.time() * MILLISECONDS_PER_SECOND)
                         config[chat_id] = settings
                         save_config(config)
                 
@@ -394,7 +401,7 @@ def handle_monitor_status(chat_id: str, message_id: int):
         
         last_change = settings.get('monitor_last_change')
         if last_change:
-            duration = int(time.time() * 1000) - last_change
+            duration = int(time.time() * MILLISECONDS_PER_SECOND) - last_change
             message += f'\nОстання зміна: {format_duration(duration)} тому'
         
         send_message(chat_id, message)
@@ -543,7 +550,7 @@ class GraphenkoThread(threading.Thread):
         while self.running:
             try:
                 if not first_run:
-                    time.sleep(300)  # 5 minutes
+                    time.sleep(GRAPHENKO_UPDATE_INTERVAL)
                 first_run = False
                 
                 config = load_config()
@@ -560,7 +567,7 @@ class GraphenkoThread(threading.Thread):
                     full_caption = f'{caption}\nОновлено: {timestamp}'
                     
                     # Add cache buster
-                    cb = int(time.time() * 1000)
+                    cb = int(time.time() * MILLISECONDS_PER_SECOND)
                     photo_url = f'{image_url}?cb={cb}'
                     
                     # Check if we have an existing message
