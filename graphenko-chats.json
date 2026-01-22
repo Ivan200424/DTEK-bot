@@ -2,8 +2,11 @@
   {
     "-1003523279109": {
       "message_id": 6,
-      "image_url": "https://raw.githubusercontent.com/Baskerville42/outage-data-ua/refs/heads/main/images/kyiv/gpv-3-1-emergency.png",
+      "image_url": "https://raw.githubusercontent.com/Baskerville42/outage-data-ua/refs/heads/main/images/kyiv-region/gpv-3-1-emergency.png",
       "caption": "⚡️ Графік стабілізаційних вимкнень. Це повідомлення оновлюється щогодини автоматично.",
+      "region": "kyiv-region",
+      "group": "3.1",
+      "format_preference": "image",
       "monitor_host": "93.127.118.86",
       "monitor_port": 443,
       "monitor_interval_sec": 30,

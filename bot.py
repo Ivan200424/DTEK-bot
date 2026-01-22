@@ -31,6 +31,9 @@ except ImportError:
     print('ERROR: python-telegram-bot library not found. Install with: pip install python-telegram-bot>=20.0,<21.0')
     sys.exit(1)
 
+# Bot version
+BOT_VERSION = '1.1.0'
+
 # Configuration from environment variables
 BOT_TOKEN = os.getenv('BOT_TOKEN')
 DEFAULT_CHAT_ID = os.getenv('CHAT_ID', '-1003523279109')
@@ -374,10 +377,11 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     welcome_text = (
         f'👋 Вітаю, {user.full_name if user else "користувач"}!\n\n'
         '🤖 Це бот для моніторингу електроенергії та графіків відключень.\n\n'
-        'Оберіть опцію з меню:'
+        'Оберіть опцію з меню:\n\n'
+        f'_Версія: {BOT_VERSION}_'
     )
     
-    await update.message.reply_text(welcome_text, reply_markup=keyboard)
+    await update.message.reply_text(welcome_text, reply_markup=keyboard, parse_mode=ParseMode.MARKDOWN)
 
 
 async def handle_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -455,7 +459,9 @@ async def handle_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
 👨‍💻 Автор телеграм каналу:
       Ім'я: {author_name}
       Username: @{author_username}
-      Telegram ID: {author_id}'''
+      Telegram ID: {author_id}
+
+🤖 Версія бота: {BOT_VERSION}'''
     
     await update.message.reply_text(status_message)
 
