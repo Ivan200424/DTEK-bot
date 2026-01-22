@@ -241,12 +241,9 @@ def build_settings_keyboard(chat_id: str) -> list:
     """Build settings menu keyboard with dynamic pause/resume button"""
     pause_resume_text = get_pause_resume_button_text(chat_id)
     
-    keyboard = [
-        ['📊 Статус', '💡 Моніторинг'],
-        ['📈 Графіки', '⚙️ Налаштування'],
-        [pause_resume_text],
-        ['❓ Допомога']
-    ]
+    # Copy base keyboard and insert pause/resume button
+    keyboard = [row[:] for row in MAIN_MENU_KEYBOARD_BASE]  # Deep copy of rows
+    keyboard.insert(2, [pause_resume_text])  # Insert before "❓ Допомога"
     return keyboard
 
 
@@ -901,15 +898,16 @@ async def handle_settings_menu(update: Update, context: ContextTypes.DEFAULT_TYP
     
     # Get pause status for the message
     pause_status = '⏸️ Призупинено' if is_channel_paused(chat_id) else '▶️ Активний'
+    pause_button_text = get_pause_resume_button_text(chat_id)
     
-    # Single message with both keyboards
+    # Combined message with status and instructions
     settings_text = f'''⚙️ Налаштування бота
 
 Статус каналу: {pause_status}
 
-Використовуйте кнопку {"✅ Відновити роботу каналу" if is_channel_paused(chat_id) else "🔴 Тимчасово зупинити канал"} для керування роботою каналу.
+Використовуйте кнопку {pause_button_text} для керування роботою каналу.
 
-Додаткові налаштування доступні нижче:'''
+Детальні налаштування доступні нижче:'''
     
     await update.message.reply_text(
         settings_text,
@@ -918,7 +916,7 @@ async def handle_settings_menu(update: Update, context: ContextTypes.DEFAULT_TYP
     
     # Send inline keyboard for detailed settings
     await update.message.reply_text(
-        'Детальні налаштування:',
+        'Оберіть параметр для зміни:',
         reply_markup=inline_markup
     )
 
