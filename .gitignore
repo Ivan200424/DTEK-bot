@@ -32,6 +32,7 @@ wheels/
 # Auto-generated files (old)
 light-history.csv
 outage-schedule.json
+graphenko-chats.json
 
 # OS
 .DS_Store

@@ -112,8 +112,8 @@ PHRASES_POWER_GONE_VARIATIONS = [
     "Інтервал зі світлом:"
 ]
 
-# Menu keyboards
-MAIN_MENU_KEYBOARD = [
+# Menu keyboards - base keyboards without dynamic buttons
+MAIN_MENU_KEYBOARD_BASE = [
     ['📊 Статус', '💡 Моніторинг'],
     ['📈 Графіки', '⚙️ Налаштування'],
     ['❓ Допомога']
@@ -134,6 +134,9 @@ GRAPHS_MENU_KEYBOARD = [
 HELP_MENU_KEYBOARD = [
     ['🔙 Головне меню']
 ]
+
+# Keep backward compatibility
+MAIN_MENU_KEYBOARD = MAIN_MENU_KEYBOARD_BASE
 
 # ============================================================================
 # Configuration Management
@@ -214,6 +217,58 @@ def update_chat_config(chat_id: str, updates: Dict):
         config[chat_id] = get_chat_config(chat_id)
     config[chat_id].update(updates)
     save_config(config)
+
+
+# ============================================================================
+# Keyboard Helper Functions
+# ============================================================================
+
+def is_channel_paused(chat_id: str) -> bool:
+    """Check if channel is paused"""
+    config = get_chat_config(chat_id)
+    return config.get('light_paused', False) and config.get('graphs_paused', False)
+
+
+def get_pause_resume_button_text(chat_id: str) -> str:
+    """Get the appropriate pause/resume button text based on current state"""
+    if is_channel_paused(chat_id):
+        return '✅ Відновити роботу каналу'
+    else:
+        return '🔴 Тимчасово зупинити канал'
+
+
+def build_settings_keyboard(chat_id: str) -> list:
+    """Build settings menu keyboard with dynamic pause/resume button"""
+    pause_resume_text = get_pause_resume_button_text(chat_id)
+    
+    # Copy base keyboard and insert pause/resume button
+    keyboard = [row[:] for row in MAIN_MENU_KEYBOARD_BASE]  # Deep copy of rows
+    keyboard.insert(2, [pause_resume_text])  # Insert before "❓ Допомога"
+    return keyboard
+
+
+async def toggle_channel_pause(update: Update, chat_id: str, pause: bool):
+    """Helper function to pause or resume channel and update keyboard"""
+    if pause:
+        # Pause entire channel
+        update_chat_config(chat_id, {
+            'light_paused': True,
+            'graphs_paused': True,
+            'monitor_enabled': False
+        })
+        message = '⏸️ Канал призупинено. Моніторинг та оновлення графіків вимкнено.'
+    else:
+        # Resume channel operation
+        update_chat_config(chat_id, {
+            'light_paused': False,
+            'graphs_paused': False,
+            'monitor_enabled': True
+        })
+        message = '✅ Канал відновлено. Моніторинг та оновлення графіків увімкнено.'
+    
+    # Update reply keyboard with new button state
+    reply_keyboard = ReplyKeyboardMarkup(build_settings_keyboard(chat_id), resize_keyboard=True)
+    await update.message.reply_text(message, reply_markup=reply_keyboard)
 
 
 # ============================================================================
@@ -477,7 +532,8 @@ def check_tcp_connection(host: str, port: int, timeout: int = 5) -> bool:
 
 async def show_main_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Show the main menu"""
-    keyboard = ReplyKeyboardMarkup(MAIN_MENU_KEYBOARD, resize_keyboard=True)
+    chat_id = str(update.effective_chat.id)
+    keyboard = ReplyKeyboardMarkup(build_settings_keyboard(chat_id), resize_keyboard=True)
     await update.message.reply_text(
         '🏠 Головне меню\n\nОберіть опцію:',
         reply_markup=keyboard
@@ -499,7 +555,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         'last_user_id': user.id if user else None
     })
     
-    keyboard = ReplyKeyboardMarkup(MAIN_MENU_KEYBOARD, resize_keyboard=True)
+    keyboard = ReplyKeyboardMarkup(build_settings_keyboard(chat_id), resize_keyboard=True)
     
     welcome_text = (
         f'👋 Вітаю, {user.full_name if user else "користувач"}!\n\n'
@@ -806,11 +862,8 @@ async def handle_settings_menu(update: Update, context: ContextTypes.DEFAULT_TYP
     is_admin = user_id == ADMIN_USER_ID
     
     chat_id = str(update.effective_chat.id)
-    config = get_chat_config(chat_id)
     
-    # Check if channel is paused
-    is_paused = config.get('light_paused', False) and config.get('graphs_paused', False)
-    
+    # Build inline keyboard for detailed settings
     keyboard = [
         [
             InlineKeyboardButton('🌐 Змінити IP', callback_data='settings_ip'),
@@ -829,15 +882,8 @@ async def handle_settings_menu(update: Update, context: ContextTypes.DEFAULT_TYP
             InlineKeyboardButton('📝 Опис каналу', callback_data='settings_description')
         ],
         [InlineKeyboardButton('⚒️ Техпідтримка', callback_data='settings_support')],
+        [InlineKeyboardButton('🗑️ Видалити бота з каналу', callback_data='settings_delete')]
     ]
-    
-    # Dynamic pause/resume button
-    if is_paused:
-        keyboard.append([InlineKeyboardButton('✅ Відновити роботу каналу', callback_data='settings_resume')])
-    else:
-        keyboard.append([InlineKeyboardButton('🔴 Тимчасово зупинити канал', callback_data='settings_pause')])
-    
-    keyboard.append([InlineKeyboardButton('🗑️ Видалити бота з каналу', callback_data='settings_delete')])
     
     if is_admin:
         keyboard.append([
@@ -845,11 +891,33 @@ async def handle_settings_menu(update: Update, context: ContextTypes.DEFAULT_TYP
             InlineKeyboardButton('⏱ Інтервал графік', callback_data='settings_graph_interval')
         ])
     
-    reply_markup = InlineKeyboardMarkup(keyboard)
+    inline_markup = InlineKeyboardMarkup(keyboard)
+    
+    # Build reply keyboard with dynamic pause/resume button
+    reply_keyboard = ReplyKeyboardMarkup(build_settings_keyboard(chat_id), resize_keyboard=True)
+    
+    # Get pause status for the message
+    pause_status = '⏸️ Призупинено' if is_channel_paused(chat_id) else '▶️ Активний'
+    pause_button_text = get_pause_resume_button_text(chat_id)
+    
+    # Combined message with status and instructions
+    settings_text = f'''⚙️ Налаштування бота
+
+Статус каналу: {pause_status}
+
+Використовуйте кнопку {pause_button_text} для керування роботою каналу.
+
+Детальні налаштування доступні нижче:'''
     
     await update.message.reply_text(
-        '⚙️ Налаштування бота\n\nОберіть параметр для зміни:',
-        reply_markup=reply_markup
+        settings_text,
+        reply_markup=reply_keyboard
+    )
+    
+    # Send inline keyboard for detailed settings
+    await update.message.reply_text(
+        'Оберіть параметр для зміни:',
+        reply_markup=inline_markup
     )
 
 
@@ -940,24 +1008,6 @@ async def handle_settings_callback(update: Update, context: ContextTypes.DEFAULT
             'З питаннями звертайтесь: @support_username\n'
             'Email: support@example.com'
         )
-    
-    elif action == 'settings_pause':
-        # Pause entire channel without submenu
-        update_chat_config(chat_id, {
-            'light_paused': True,
-            'graphs_paused': True,
-            'monitor_enabled': False
-        })
-        await query.message.reply_text('⏸️ Канал призупинено. Моніторинг та оновлення графіків вимкнено.')
-    
-    elif action == 'settings_resume':
-        # Resume channel operation
-        update_chat_config(chat_id, {
-            'light_paused': False,
-            'graphs_paused': False,
-            'monitor_enabled': True
-        })
-        await query.message.reply_text('✅ Канал відновлено. Моніторинг та оновлення графіків увімкнено.')
     
     elif action == 'settings_delete':
         keyboard = InlineKeyboardMarkup([
@@ -1079,6 +1129,10 @@ async def handle_text_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 f'📅 Ваш регіон: *{region_name}*\n📅 Ваша група: *{group}*\n\nГрафік оновлюється автоматично.',
                 parse_mode=ParseMode.MARKDOWN
             )
+        elif text == '🔴 Тимчасово зупинити канал':
+            await toggle_channel_pause(update, chat_id, pause=True)
+        elif text == '✅ Відновити роботу каналу':
+            await toggle_channel_pause(update, chat_id, pause=False)
         return
     
     # Process input based on what we're awaiting
