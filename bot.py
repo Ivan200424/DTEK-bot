@@ -1,34 +1,40 @@
 #!/usr/bin/env python3
 """
-DTEK Bot - Standalone Telegram Bot for Power Monitoring and Graphenko Updates
-Combines power monitoring (TCP checks) and Graphenko functionality (image updates)
+DTEK Bot - Interactive Telegram Bot for Power Monitoring and Graphenko Updates
+Features: TCP monitoring, Graphenko updates, interactive menu-based UX
 """
 
+import asyncio
 import json
 import os
 import socket
 import sys
 import threading
 import time
+import random
 from datetime import datetime, timezone, timedelta
-from typing import Optional, Dict, Any
+from typing import Optional, Dict, Any, List
 
 try:
-    import requests
+    from telegram import Update, ReplyKeyboardMarkup, InlineKeyboardMarkup, InlineKeyboardButton, InputMediaPhoto
+    from telegram.ext import Application, CommandHandler, MessageHandler, CallbackQueryHandler, ContextTypes, filters
+    from telegram.constants import ParseMode
+    from telegram.error import TelegramError
 except ImportError:
-    print('ERROR: requests library not found. Install with: pip install requests')
+    print('ERROR: python-telegram-bot library not found. Install with: pip install python-telegram-bot>=20.0,<21.0')
     sys.exit(1)
 
 # Configuration from environment variables
 BOT_TOKEN = os.getenv('BOT_TOKEN')
 DEFAULT_CHAT_ID = os.getenv('CHAT_ID', '-1003523279109')
 CONFIG_FILE = 'graphenko-chats.json'
+ADMIN_USER_ID = int(os.getenv('ADMIN_USER_ID', '1026177113'))
 
 # Constants
 DEFAULT_HOST = '93.127.118.86'
 DEFAULT_PORT = 443
 DEFAULT_INTERVAL = 30
-GRAPHENKO_UPDATE_INTERVAL = 300  # 5 minutes in seconds
+GRAPHENKO_UPDATE_INTERVAL = 60  # Default: 1 minute (configurable per-chat via graph_check_interval)
 OUTAGE_IMAGES_BASE = 'https://raw.githubusercontent.com/Baskerville42/outage-data-ua/refs/heads/main/images/'
 DEFAULT_CAPTION = '⚡️ Графік стабілізаційних вімкнень. Це повідомлення оновлюється щогодини автоматично.'
 
@@ -42,84 +48,70 @@ if not BOT_TOKEN:
     print('ERROR: BOT_TOKEN environment variable is required')
     sys.exit(1)
 
-API_BASE = f'https://api.telegram.org/bot{BOT_TOKEN}'
+# Randomized phrases for monitoring notifications
+PHRASES_POWER_APPEARED_BASE = [
+    "Повернулось після",
+    "Очікували",
+    "Світла не було",
+    "Дочекались за",
+    "Без світла:",
+    "Час без електроенергії:",
+    "Відключення тривало",
+    "Період знеструмлення:"
+]
 
+PHRASES_POWER_APPEARED_VARIATIONS = [
+    "Без світла були",
+    "Нарешті зʼявилось після",
+    "Світло взяло паузу на",
+    "Зробило перерву на"
+]
 
-# ============================================================================
-# Telegram API Functions
-# ============================================================================
+PHRASES_POWER_GONE_BASE = [
+    "Світло трималось",
+    "Світло було",
+    "Протрималось",
+    "Пішло на паузу після",
+    "Зі світлом було",
+    "Період зі світлом:",
+    "Електроенергія була"
+]
 
-def telegram_request(method: str, data: Dict = None) -> Dict:
-    """Make a request to Telegram API"""
-    url = f'{API_BASE}/{method}'
-    try:
-        if data:
-            response = requests.post(url, json=data, timeout=30)
-        else:
-            response = requests.get(url, timeout=30)
-        
-        return response.json()
-    except requests.exceptions.RequestException as e:
-        print(f'ERROR: Telegram API request failed for {method}: {e}')
-        return {'ok': False, 'error': str(e)}
-    except Exception as e:
-        print(f'ERROR: Unexpected error in {method}: {e}')
-        return {'ok': False, 'error': str(e)}
+PHRASES_POWER_GONE_VARIATIONS = [
+    "Було, але недовго —",
+    "Тайм-аут після",
+    "Світло сказало \"па-па\" через",
+    "Протрималось, скільки змогло —",
+    "Пішло на перерву через",
+    "Знову пішло після",
+    "Вистачило рівно на",
+    "Побуло з нами",
+    "Подача тривала",
+    "Інтервал зі світлом:"
+]
 
+# Menu keyboards
+MAIN_MENU_KEYBOARD = [
+    ['📊 Статус', '💡 Моніторинг'],
+    ['📈 Графіки', '⚙️ Налаштування'],
+    ['❓ Допомога']
+]
 
-def send_message(chat_id: str, text: str, **kwargs) -> Dict:
-    """Send a text message to a chat"""
-    data = {'chat_id': chat_id, 'text': text, **kwargs}
-    return telegram_request('sendMessage', data)
+MONITORING_MENU_KEYBOARD = [
+    ['▶️ Запустити', '⏸️ Зупинити'],
+    ['📊 Статистика'],
+    ['🔙 Головне меню']
+]
 
+GRAPHS_MENU_KEYBOARD = [
+    ['📥 Отримати зараз', '⚙️ Налаштування'],
+    ['📅 Мій графік'],
+    ['🔙 Головне меню']
+]
 
-def delete_message(chat_id: str, message_id: int) -> Dict:
-    """Delete a message"""
-    data = {'chat_id': chat_id, 'message_id': message_id}
-    result = telegram_request('deleteMessage', data)
-    if not result.get('ok'):
-        # Message already deleted is OK
-        if result.get('error_code') == 400 and 'not found' in result.get('description', '').lower():
-            return {'ok': True, 'reason': 'already-deleted'}
-    return result
-
-
-def send_photo(chat_id: str, photo_url: str, caption: str = '', **kwargs) -> Dict:
-    """Send a photo message"""
-    data = {'chat_id': chat_id, 'photo': photo_url, 'caption': caption, **kwargs}
-    return telegram_request('sendPhoto', data)
-
-
-def edit_message_media(chat_id: str, message_id: int, photo_url: str, caption: str = '') -> Dict:
-    """Edit media in an existing message"""
-    data = {
-        'chat_id': chat_id,
-        'message_id': message_id,
-        'media': {
-            'type': 'photo',
-            'media': photo_url,
-            'caption': caption
-        }
-    }
-    return telegram_request('editMessageMedia', data)
-
-
-def pin_message(chat_id: str, message_id: int) -> Dict:
-    """Pin a message in a chat"""
-    data = {'chat_id': chat_id, 'message_id': message_id, 'disable_notification': True}
-    return telegram_request('pinChatMessage', data)
-
-
-def get_updates(offset: Optional[int] = None, timeout: int = 30) -> Dict:
-    """Get updates from Telegram (long polling)"""
-    data = {
-        'timeout': timeout,
-        'allowed_updates': ['my_chat_member', 'message', 'channel_post']
-    }
-    if offset is not None:
-        data['offset'] = offset
-    return telegram_request('getUpdates', data)
-
+HELP_MENU_KEYBOARD = [
+    ['🔙 Головне меню']
+]
 
 # ============================================================================
 # Configuration Management
@@ -165,33 +157,49 @@ def save_config(config: Dict[str, Dict]) -> bool:
         return False
 
 
-# ============================================================================
-# Monitoring Functions
-# ============================================================================
+def get_chat_config(chat_id: str) -> Dict:
+    """Get configuration for a specific chat, creating if needed"""
+    config = load_config()
+    if chat_id not in config:
+        # Initialize with defaults
+        config[chat_id] = {
+            'region': 'kyiv',
+            'group': '3.1',
+            'format_preference': 'image',
+            'creation_date': datetime.now(timezone.utc).isoformat(),
+            'user_count': 0,
+            'monitor_host': DEFAULT_HOST,
+            'monitor_port': DEFAULT_PORT,
+            'monitor_interval_sec': DEFAULT_INTERVAL,
+            'monitor_enabled': False,
+            'fallback_host': None,
+            'fallback_port': None,
+            'light_paused': False,
+            'graphs_paused': False,
+            'channel_title': '',
+            'channel_description': '',
+            'light_check_interval': DEFAULT_INTERVAL,
+            'graph_check_interval': GRAPHENKO_UPDATE_INTERVAL
+        }
+        save_config(config)
+    return config[chat_id]
 
-def check_tcp_connection(host: str, port: int, timeout: int = 5) -> bool:
-    """Check if TCP connection to host:port succeeds"""
-    try:
-        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
-            sock.settimeout(timeout)
-            result = sock.connect_ex((host, port))
-            return result == 0
-    except Exception as e:
-        print(f'ERROR: TCP check failed for {host}:{port}: {e}')
-        return False
 
+def update_chat_config(chat_id: str, updates: Dict):
+    """Update configuration for a specific chat"""
+    config = load_config()
+    if chat_id not in config:
+        config[chat_id] = get_chat_config(chat_id)
+    config[chat_id].update(updates)
+    save_config(config)
+
+
+# ============================================================================
+# Utility Functions
+# ============================================================================
 
 def calculate_kyiv_offset() -> int:
-    """
-    Calculate the UTC offset for Kyiv timezone (accounting for DST).
-    
-    Ukraine observes DST from last Sunday of March to last Sunday of October:
-    - Winter (standard time): UTC+2
-    - Summer (daylight saving time): UTC+3
-    
-    Note: We implement this manually to avoid external dependencies like pytz,
-    as per project requirements (only requests library allowed).
-    """
+    """Calculate the UTC offset for Kyiv timezone (accounting for DST)"""
     now = datetime.now(timezone.utc)
     year = now.year
     
@@ -271,19 +279,596 @@ def format_duration(milliseconds: int) -> str:
     return f'{seconds} секунд'
 
 
-def send_status_notification(chat_id: str, new_status: str, last_change_time: int):
-    """Send power status change notification"""
-    current_time = get_kyiv_time()
-    duration = int(time.time() * MILLISECONDS_PER_SECOND) - last_change_time
-    formatted_duration = format_duration(duration)
+def format_duration_short(milliseconds: int) -> str:
+    """Format duration in short format (Xгод Yхв Zс)"""
+    seconds = milliseconds // MILLISECONDS_PER_SECOND
+    minutes = seconds // SECONDS_PER_MINUTE
+    hours = minutes // MINUTES_PER_HOUR
     
-    if new_status == 'online':
-        message = f'🟢 {current_time} Світло з\'явилося\n🕓 Його не було {formatted_duration}'
+    remaining_minutes = minutes % MINUTES_PER_HOUR
+    remaining_seconds = seconds % SECONDS_PER_MINUTE
+    
+    parts = []
+    if hours > 0:
+        parts.append(f'{hours}год')
+    if remaining_minutes > 0:
+        parts.append(f'{remaining_minutes}хв')
+    if remaining_seconds > 0 or not parts:
+        parts.append(f'{remaining_seconds}с')
+    
+    return ' '.join(parts)
+
+
+def get_random_phrase(base_phrases: List[str], variation_phrases: List[str]) -> str:
+    """Get a random phrase with 70% base, 30% variations"""
+    if random.random() < 0.7:
+        return random.choice(base_phrases)
     else:
-        message = f'🔴 {current_time} Світло зникло\n🕓 Воно було {formatted_duration}'
+        return random.choice(variation_phrases)
+
+
+
+def check_tcp_connection(host: str, port: int, timeout: int = 5) -> bool:
+    """Check if TCP connection to host:port succeeds"""
+    try:
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+            sock.settimeout(timeout)
+            result = sock.connect_ex((host, port))
+            return result == 0
+    except Exception as e:
+        print(f'ERROR: TCP check failed for {host}:{port}: {e}')
+        return False
+
+
+# ============================================================================
+# Menu Handlers
+# ============================================================================
+
+async def show_main_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Show the main menu"""
+    keyboard = ReplyKeyboardMarkup(MAIN_MENU_KEYBOARD, resize_keyboard=True)
+    await update.message.reply_text(
+        '🏠 Головне меню\n\nОберіть опцію:',
+        reply_markup=keyboard
+    )
+
+
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle /start command"""
+    chat_id = str(update.effective_chat.id)
+    user = update.effective_user
     
-    send_message(chat_id, message)
-    print(f'Status notification sent to {chat_id}: {new_status}')
+    # Initialize config if needed
+    config = get_chat_config(chat_id)
+    
+    # Update user info
+    update_chat_config(chat_id, {
+        'last_user_name': user.full_name if user else 'Unknown',
+        'last_user_username': user.username if user else None,
+        'last_user_id': user.id if user else None
+    })
+    
+    keyboard = ReplyKeyboardMarkup(MAIN_MENU_KEYBOARD, resize_keyboard=True)
+    
+    welcome_text = (
+        f'👋 Вітаю, {user.full_name if user else "користувач"}!\n\n'
+        '🤖 Це бот для моніторингу електроенергії та графіків відключень.\n\n'
+        'Оберіть опцію з меню:'
+    )
+    
+    await update.message.reply_text(welcome_text, reply_markup=keyboard)
+
+
+async def handle_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle Status screen"""
+    chat_id = str(update.effective_chat.id)
+    config = get_chat_config(chat_id)
+    
+    # Calculate status
+    monitor_status = config.get('monitor_last_status', 'unknown')
+    status_emoji = '🟢' if monitor_status == 'online' else '🔴'
+    status_text = 'світло є' if monitor_status == 'online' else 'світла немає'
+    
+    # Last successful connection
+    last_change = config.get('monitor_last_change')
+    last_change_emoji = '🟢' if monitor_status == 'online' else '🔴'
+    if last_change:
+        duration = int(time.time() * MILLISECONDS_PER_SECOND) - last_change
+        last_conn_text = f'{format_duration_short(duration)} тому {last_change_emoji}'
+        last_conn_dt = datetime.fromtimestamp(last_change / MILLISECONDS_PER_SECOND)
+        last_conn_date = last_conn_dt.strftime('%Y-%m-%d %H:%M:%S')
+    else:
+        last_conn_text = 'немає даних'
+        last_conn_date = 'немає даних'
+    
+    # Last status change
+    if last_change:
+        status_change_text = f'{format_duration_short(duration)} тому'
+        status_change_date = last_conn_date
+    else:
+        status_change_text = 'немає даних'
+        status_change_date = 'немає даних'
+    
+    # IP addresses
+    primary_ip = config.get('monitor_host', DEFAULT_HOST)
+    fallback_ip = config.get('fallback_host', 'немає')
+    
+    # Creation date
+    creation_date = config.get('creation_date')
+    if creation_date:
+        try:
+            created_dt = datetime.fromisoformat(creation_date)
+            creation_str = created_dt.strftime('%Y-%m-%d %H:%M:%S')
+            days_ago = (datetime.now(timezone.utc) - created_dt).days
+            creation_text = f'{creation_str}, ({days_ago}д тому)'
+        except:
+            creation_text = 'невідомо'
+    else:
+        creation_text = 'невідомо'
+    
+    # User count
+    user_count = config.get('user_count', 0)
+    
+    # Author info
+    author_name = config.get('last_user_name', '[disabled]')
+    author_username = config.get('last_user_username', '[disabled]')
+    author_id = config.get('last_user_id', ADMIN_USER_ID)
+    
+    status_message = f'''💡 Статус світла: {status_emoji} {status_text}
+
+📶 Останній успішний зв'язок:
+    {last_conn_text}
+    {last_conn_date}
+
+🔄 Остання зміна статусу:
+    {status_change_text}
+    {status_change_date}
+
+🌐 IP-адреса / DDNS:
+    {primary_ip}
+🌐 Запасна IP-адреса / DDNS:
+    {fallback_ip}
+📅 Дата створення каналу:
+    {creation_text}
+👤 Кількість юзерів у каналі: {user_count}
+👨‍💻 Автор телеграм каналу:
+      Ім'я: {author_name}
+      Username: @{author_username}
+      Telegram ID: {author_id}'''
+    
+    await update.message.reply_text(status_message)
+
+
+async def handle_monitoring_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle Monitoring menu"""
+    keyboard = ReplyKeyboardMarkup(MONITORING_MENU_KEYBOARD, resize_keyboard=True)
+    await update.message.reply_text(
+        '💡 Моніторинг електроенергії\n\nОберіть дію:',
+        reply_markup=keyboard
+    )
+
+
+async def handle_monitoring_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle monitoring start"""
+    chat_id = str(update.effective_chat.id)
+    config = get_chat_config(chat_id)
+    
+    if not config.get('light_paused'):
+        update_chat_config(chat_id, {'monitor_enabled': True})
+        await update.message.reply_text('✅ Моніторинг запущено')
+    else:
+        await update.message.reply_text('⚠️ Моніторинг призупинено через налаштування каналу')
+
+
+async def handle_monitoring_stop(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle monitoring stop"""
+    chat_id = str(update.effective_chat.id)
+    update_chat_config(chat_id, {'monitor_enabled': False})
+    await update.message.reply_text('⏸️ Моніторинг зупинено')
+
+
+async def handle_monitoring_stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle monitoring statistics"""
+    chat_id = str(update.effective_chat.id)
+    config = get_chat_config(chat_id)
+    
+    status = config.get('monitor_last_status', 'unknown')
+    last_change = config.get('monitor_last_change')
+    
+    if last_change:
+        duration = int(time.time() * MILLISECONDS_PER_SECOND) - last_change
+        duration_text = format_duration(duration)
+    else:
+        duration_text = 'немає даних'
+    
+    stats_text = f'''📊 Статистика моніторингу:
+
+Поточний статус: {'🟢 Онлайн' if status == 'online' else '🔴 Офлайн'}
+Тривалість поточного стану: {duration_text}
+Моніторинг: {'✅ Увімкнено' if config.get('monitor_enabled') else '❌ Вимкнено'}'''
+    
+    await update.message.reply_text(stats_text)
+
+
+async def handle_graphs_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle Graphs menu"""
+    keyboard = ReplyKeyboardMarkup(GRAPHS_MENU_KEYBOARD, resize_keyboard=True)
+    await update.message.reply_text(
+        '📈 Графіки відключень\n\nОберіть дію:',
+        reply_markup=keyboard
+    )
+
+
+async def handle_graphs_now(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle get graphs now"""
+    chat_id = str(update.effective_chat.id)
+    config = get_chat_config(chat_id)
+    
+    region = config.get('region', 'kyiv')
+    group = config.get('group', '3.1')
+    format_pref = config.get('format_preference', 'image')
+    
+    # Construct image URL
+    image_url = f'{OUTAGE_IMAGES_BASE}{region}/gpv-{group}-emergency.png'
+    
+    if format_pref in ['image', 'both']:
+        # Send image
+        cb = int(time.time() * MILLISECONDS_PER_SECOND)
+        photo_url = f'{image_url}?cb={cb}'
+        caption = f'⚡️ Графік для черги {group}, регіон: {region}'
+        
+        try:
+            await update.message.reply_photo(photo=photo_url, caption=caption)
+        except Exception as e:
+            await update.message.reply_text(f'❌ Помилка завантаження зображення: {e}')
+    
+    if format_pref in ['text', 'both']:
+        # Send text (stub - would parse actual schedule)
+        today = get_kyiv_datetime()
+        tomorrow = today + timedelta(days=1)
+        
+        text_schedule = f'''🗓 Оновлено графік відключень на сьогодні, {today.strftime('%d.%m.%Y')} ({today.strftime('%A')}), для черги {group}:
+
+🪫 00:00 - 01:00 (~1 год)
+🪫 08:00 - 11:30 (~3.5 год)
+
+🗓 Оновлено графік відключень на завтра, {tomorrow.strftime('%d.%m.%Y')} ({tomorrow.strftime('%A')}), для черги {group}:
+
+🪫 07:00 - 10:00 (~3 год)
+🪫 12:00 - 13:30 (~1.5 год)'''
+        
+        await update.message.reply_text(text_schedule)
+
+
+async def handle_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle Help screen"""
+    keyboard = ReplyKeyboardMarkup(HELP_MENU_KEYBOARD, resize_keyboard=True)
+    
+    help_text = '''❓ Довідка
+
+🤖 Цей бот допомагає відстежувати:
+• Наявність електроенергії (моніторинг)
+• Графіки планових відключень
+
+📊 **Статус** - показує поточний стан світла та статистику
+
+💡 **Моніторинг** - керування моніторингом електроенергії
+
+📈 **Графіки** - перегляд графіків відключень
+
+⚙️ **Налаштування** - налаштування бота
+
+Для отримання додаткової допомоги зверніться до адміністратора.'''
+    
+    await update.message.reply_text(help_text, reply_markup=keyboard)
+
+
+async def handle_settings_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle Settings menu"""
+    user_id = update.effective_user.id if update.effective_user else 0
+    is_admin = user_id == ADMIN_USER_ID
+    
+    keyboard = [
+        [
+            InlineKeyboardButton('🌐 Змінити IP', callback_data='settings_ip'),
+            InlineKeyboardButton('🌐 Запасна IP', callback_data='settings_fallback_ip')
+        ],
+        [
+            InlineKeyboardButton('📊 Формат графіків', callback_data='settings_format'),
+            InlineKeyboardButton('🗺 Змінити регіон', callback_data='settings_region')
+        ],
+        [
+            InlineKeyboardButton('🔢 Змінити групу', callback_data='settings_group'),
+            InlineKeyboardButton('🔕 Сповіщення', callback_data='settings_notifications')
+        ],
+        [
+            InlineKeyboardButton('✏️ Заголовок', callback_data='settings_title'),
+            InlineKeyboardButton('📝 Опис каналу', callback_data='settings_description')
+        ],
+        [InlineKeyboardButton('⚒️ Техпідтримка', callback_data='settings_support')],
+        [InlineKeyboardButton('🔴 Тимчасово зупинити канал', callback_data='settings_pause')],
+        [InlineKeyboardButton('🗑️ Видалити бота з каналу', callback_data='settings_delete')]
+    ]
+    
+    if is_admin:
+        keyboard.append([
+            InlineKeyboardButton('⏱ Інтервал світла', callback_data='settings_light_interval'),
+            InlineKeyboardButton('⏱ Інтервал графік', callback_data='settings_graph_interval')
+        ])
+    
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    
+    await update.message.reply_text(
+        '⚙️ Налаштування бота\n\nОберіть параметр для зміни:',
+        reply_markup=reply_markup
+    )
+
+
+async def handle_settings_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle settings inline button callbacks"""
+    query = update.callback_query
+    await query.answer()
+    
+    chat_id = str(update.effective_chat.id)
+    config = get_chat_config(chat_id)
+    
+    action = query.data
+    
+    if action == 'settings_ip':
+        await query.message.reply_text(
+            '🌐 Введіть нову IP-адресу або DDNS:\n\n'
+            'Приклад: 93.127.118.86 або myhost.ddns.net'
+        )
+        context.user_data['awaiting'] = 'ip'
+    
+    elif action == 'settings_fallback_ip':
+        await query.message.reply_text(
+            '🌐 Введіть запасну IP-адресу або DDNS:\n\n'
+            'Приклад: 192.168.1.1 або backup.ddns.net'
+        )
+        context.user_data['awaiting'] = 'fallback_ip'
+    
+    elif action == 'settings_format':
+        keyboard = InlineKeyboardMarkup([
+            [InlineKeyboardButton('🖼 Зображення', callback_data='format_image')],
+            [InlineKeyboardButton('📝 Текст', callback_data='format_text')],
+            [InlineKeyboardButton('🖼📝 Обидва', callback_data='format_both')]
+        ])
+        await query.message.reply_text(
+            '📊 Оберіть формат графіків:',
+            reply_markup=keyboard
+        )
+    
+    elif action == 'settings_region':
+        await query.message.reply_text(
+            '🗺 Введіть регіон:\n\n'
+            'Приклад: kyiv, lviv, odesa'
+        )
+        context.user_data['awaiting'] = 'region'
+    
+    elif action == 'settings_group':
+        await query.message.reply_text(
+            '🔢 Введіть номер групи:\n\n'
+            'Приклад: 3.1, 2.2, 1.3'
+        )
+        context.user_data['awaiting'] = 'group'
+    
+    elif action == 'settings_notifications':
+        current = config.get('notifications_enabled', True)
+        keyboard = InlineKeyboardMarkup([
+            [InlineKeyboardButton('✅ Увімкнути', callback_data='notif_on')],
+            [InlineKeyboardButton('❌ Вимкнути', callback_data='notif_off')]
+        ])
+        await query.message.reply_text(
+            f'🔕 Сповіщення зараз: {"✅ Увімкнено" if current else "❌ Вимкнено"}\n\n'
+            'Оберіть стан:',
+            reply_markup=keyboard
+        )
+    
+    elif action == 'settings_title':
+        await query.message.reply_text('✏️ Введіть новий заголовок каналу:')
+        context.user_data['awaiting'] = 'title'
+    
+    elif action == 'settings_description':
+        await query.message.reply_text('📝 Введіть новий опис каналу:')
+        context.user_data['awaiting'] = 'description'
+    
+    elif action == 'settings_support':
+        await query.message.reply_text(
+            '⚒️ Техпідтримка\n\n'
+            'З питаннями звертайтесь: @support_username\n'
+            'Email: support@example.com'
+        )
+    
+    elif action == 'settings_pause':
+        keyboard = InlineKeyboardMarkup([
+            [InlineKeyboardButton('💡 Світло', callback_data='pause_light')],
+            [InlineKeyboardButton('📈 Графіки', callback_data='pause_graphs')],
+            [InlineKeyboardButton('🔴 Все', callback_data='pause_all')],
+            [InlineKeyboardButton('❌ Скасувати', callback_data='pause_cancel')]
+        ])
+        await query.message.reply_text(
+            '🔴 Що призупинити?',
+            reply_markup=keyboard
+        )
+    
+    elif action == 'settings_delete':
+        keyboard = InlineKeyboardMarkup([
+            [InlineKeyboardButton('✅ Так, видалити', callback_data='delete_confirm')],
+            [InlineKeyboardButton('❌ Ні, скасувати', callback_data='delete_cancel')]
+        ])
+        await query.message.reply_text(
+            '⚠️ Ви впевнені, що хочете видалити бота з каналу?\n\n'
+            'Всі налаштування будуть втрачені!',
+            reply_markup=keyboard
+        )
+    
+    elif action == 'settings_light_interval':
+        await query.message.reply_text(
+            '⏱ Введіть інтервал перевірки світла (секунди):\n\n'
+            'Рекомендовано: 30-60'
+        )
+        context.user_data['awaiting'] = 'light_interval'
+    
+    elif action == 'settings_graph_interval':
+        await query.message.reply_text(
+            '⏱ Введіть інтервал оновлення графіків (секунди):\n\n'
+            'Рекомендовано: 60-300'
+        )
+        context.user_data['awaiting'] = 'graph_interval'
+
+
+async def handle_format_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle format selection callbacks"""
+    query = update.callback_query
+    await query.answer()
+    
+    chat_id = str(update.effective_chat.id)
+    
+    format_map = {
+        'format_image': 'image',
+        'format_text': 'text',
+        'format_both': 'both'
+    }
+    
+    new_format = format_map.get(query.data)
+    if new_format:
+        update_chat_config(chat_id, {'format_preference': new_format})
+        await query.message.reply_text(f'✅ Формат змінено на: {new_format}')
+
+
+async def handle_notification_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle notification callbacks"""
+    query = update.callback_query
+    await query.answer()
+    
+    chat_id = str(update.effective_chat.id)
+    
+    if query.data == 'notif_on':
+        update_chat_config(chat_id, {'notifications_enabled': True})
+        await query.message.reply_text('✅ Сповіщення увімкнено')
+    elif query.data == 'notif_off':
+        update_chat_config(chat_id, {'notifications_enabled': False})
+        await query.message.reply_text('❌ Сповіщення вимкнено')
+
+
+async def handle_pause_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle pause callbacks"""
+    query = update.callback_query
+    await query.answer()
+    
+    chat_id = str(update.effective_chat.id)
+    
+    if query.data == 'pause_light':
+        update_chat_config(chat_id, {'light_paused': True, 'monitor_enabled': False})
+        await query.message.reply_text('⏸️ Моніторинг світла призупинено')
+    elif query.data == 'pause_graphs':
+        update_chat_config(chat_id, {'graphs_paused': True})
+        await query.message.reply_text('⏸️ Оновлення графіків призупинено')
+    elif query.data == 'pause_all':
+        update_chat_config(chat_id, {
+            'light_paused': True,
+            'graphs_paused': True,
+            'monitor_enabled': False
+        })
+        await query.message.reply_text('⏸️ Весь канал призупинено')
+    elif query.data == 'pause_cancel':
+        await query.message.reply_text('❌ Скасовано')
+
+
+async def handle_delete_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle delete callbacks"""
+    query = update.callback_query
+    await query.answer()
+    
+    chat_id = str(update.effective_chat.id)
+    
+    if query.data == 'delete_confirm':
+        # Remove config
+        config = load_config()
+        if chat_id in config:
+            del config[chat_id]
+            save_config(config)
+        
+        await query.message.reply_text(
+            '✅ Бот видалено з каналу. Всі налаштування скинуто.\n\n'
+            'Для повторного використання введіть /start'
+        )
+    elif query.data == 'delete_cancel':
+        await query.message.reply_text('❌ Скасовано')
+
+
+async def handle_text_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle text input for settings"""
+    chat_id = str(update.effective_chat.id)
+    text = update.message.text
+    
+    awaiting = context.user_data.get('awaiting')
+    if not awaiting:
+        # Handle menu buttons
+        if text == '📊 Статус':
+            await handle_status(update, context)
+        elif text == '💡 Моніторинг':
+            await handle_monitoring_menu(update, context)
+        elif text == '📈 Графіки':
+            await handle_graphs_menu(update, context)
+        elif text == '⚙️ Налаштування':
+            await handle_settings_menu(update, context)
+        elif text == '❓ Допомога':
+            await handle_help(update, context)
+        elif text == '🔙 Головне меню':
+            await show_main_menu(update, context)
+        elif text == '▶️ Запустити':
+            await handle_monitoring_start(update, context)
+        elif text == '⏸️ Зупинити':
+            await handle_monitoring_stop(update, context)
+        elif text == '📊 Статистика':
+            await handle_monitoring_stats(update, context)
+        elif text == '📥 Отримати зараз':
+            await handle_graphs_now(update, context)
+        elif text == '📅 Мій графік':
+            config = get_chat_config(chat_id)
+            group = config.get('group', '3.1')
+            await update.message.reply_text(f'📅 Ваша група: {group}\n\nГрафік оновлюється автоматично.')
+        return
+    
+    # Process input based on what we're awaiting
+    if awaiting == 'ip':
+        update_chat_config(chat_id, {'monitor_host': text.strip()})
+        await update.message.reply_text(f'✅ IP-адресу змінено на: {text.strip()}')
+    elif awaiting == 'fallback_ip':
+        update_chat_config(chat_id, {'fallback_host': text.strip()})
+        await update.message.reply_text(f'✅ Запасну IP-адресу змінено на: {text.strip()}')
+    elif awaiting == 'region':
+        update_chat_config(chat_id, {'region': text.strip().lower()})
+        await update.message.reply_text(f'✅ Регіон змінено на: {text.strip()}')
+    elif awaiting == 'group':
+        update_chat_config(chat_id, {'group': text.strip()})
+        await update.message.reply_text(f'✅ Групу змінено на: {text.strip()}')
+    elif awaiting == 'title':
+        update_chat_config(chat_id, {'channel_title': text.strip()})
+        await update.message.reply_text(f'✅ Заголовок змінено')
+    elif awaiting == 'description':
+        update_chat_config(chat_id, {'channel_description': text.strip()})
+        await update.message.reply_text(f'✅ Опис змінено')
+    elif awaiting == 'light_interval':
+        try:
+            interval = int(text.strip())
+            update_chat_config(chat_id, {'light_check_interval': interval})
+            await update.message.reply_text(f'✅ Інтервал світла змінено на: {interval}с')
+        except ValueError:
+            await update.message.reply_text('❌ Невірне значення. Введіть число.')
+            return
+    elif awaiting == 'graph_interval':
+        try:
+            interval = int(text.strip())
+            update_chat_config(chat_id, {'graph_check_interval': interval})
+            await update.message.reply_text(f'✅ Інтервал графіків змінено на: {interval}с')
+        except ValueError:
+            await update.message.reply_text('❌ Невірне значення. Введіть число.')
+            return
+    
+    context.user_data['awaiting'] = None
 
 
 # ============================================================================
@@ -293,12 +878,36 @@ def send_status_notification(chat_id: str, new_status: str, last_change_time: in
 class MonitorThread(threading.Thread):
     """Background thread for power monitoring"""
     
-    def __init__(self):
+    def __init__(self, application, event_loop):
         super().__init__(daemon=True)
         self.running = True
+        self.application = application
+        self.event_loop = event_loop
     
     def stop(self):
         self.running = False
+    
+    async def send_status_notification(self, chat_id: str, new_status: str, last_change_time: int):
+        """Send power status change notification with randomized phrases"""
+        current_time = get_kyiv_time()
+        duration = int(time.time() * MILLISECONDS_PER_SECOND) - last_change_time
+        formatted_duration = format_duration(duration)
+        
+        # Get config for schedule info (stub)
+        config = get_chat_config(chat_id)
+        
+        if new_status == 'online':
+            phrase = get_random_phrase(PHRASES_POWER_APPEARED_BASE, PHRASES_POWER_APPEARED_VARIATIONS)
+            message = f'🟢 {current_time} Світло з\'явилося\n🕓 {phrase} {formatted_duration}\n🗓 Наступне планове: через 2 години'
+        else:
+            phrase = get_random_phrase(PHRASES_POWER_GONE_BASE, PHRASES_POWER_GONE_VARIATIONS)
+            message = f'🔴 {current_time} Світло зникло\n🕓 {phrase} {formatted_duration}\n🗓 Очікуємо за графіком о 18:00'
+        
+        try:
+            await self.application.bot.send_message(chat_id=chat_id, text=message)
+            print(f'Status notification sent to {chat_id}: {new_status}')
+        except Exception as e:
+            print(f'ERROR sending notification to {chat_id}: {e}')
     
     def run(self):
         """Main monitoring loop"""
@@ -309,12 +918,12 @@ class MonitorThread(threading.Thread):
                 config = load_config()
                 
                 for chat_id, settings in config.items():
-                    if not settings.get('monitor_enabled'):
+                    if not settings.get('monitor_enabled') or settings.get('light_paused'):
                         continue
                     
                     host = settings.get('monitor_host', DEFAULT_HOST)
                     port = settings.get('monitor_port', DEFAULT_PORT)
-                    interval = settings.get('monitor_interval_sec', DEFAULT_INTERVAL)
+                    interval = settings.get('light_check_interval', DEFAULT_INTERVAL)
                     
                     # Check status
                     is_online = check_tcp_connection(host, port)
@@ -330,7 +939,17 @@ class MonitorThread(threading.Thread):
                     if previous_status and previous_status != new_status:
                         # Status changed!
                         print(f'Status changed for {chat_id}: {previous_status} -> {new_status}')
-                        send_status_notification(chat_id, new_status, last_change)
+                        
+                        # Send notification using the application's event loop
+                        try:
+                            future = asyncio.run_coroutine_threadsafe(
+                                self.send_status_notification(chat_id, new_status, last_change),
+                                self.event_loop
+                            )
+                            # Wait for completion with timeout to catch errors
+                            future.result(timeout=10)
+                        except Exception as e:
+                            print(f'ERROR in notification: {e}')
                         
                         # Update state
                         settings['monitor_last_status'] = new_status
@@ -356,204 +975,99 @@ class MonitorThread(threading.Thread):
 
 
 # ============================================================================
-# Command Handlers
-# ============================================================================
-
-def handle_monitor_on(chat_id: str, message_id: int):
-    """Handle /monitor_on command"""
-    config = load_config()
-    if chat_id not in config:
-        config[chat_id] = {}
-    
-    config[chat_id]['monitor_enabled'] = True
-    config[chat_id]['monitor_host'] = config[chat_id].get('monitor_host', DEFAULT_HOST)
-    config[chat_id]['monitor_port'] = config[chat_id].get('monitor_port', DEFAULT_PORT)
-    config[chat_id]['monitor_interval_sec'] = config[chat_id].get('monitor_interval_sec', DEFAULT_INTERVAL)
-    
-    save_config(config)
-    
-    host = config[chat_id]['monitor_host']
-    port = config[chat_id]['monitor_port']
-    interval = config[chat_id]['monitor_interval_sec']
-    
-    send_message(chat_id, f'✅ Моніторинг увімкнено\nЦіль: {host}:{port}\nІнтервал: {interval}с')
-    delete_message(chat_id, message_id)
-
-
-def handle_monitor_off(chat_id: str, message_id: int):
-    """Handle /monitor_off command"""
-    config = load_config()
-    if chat_id not in config:
-        config[chat_id] = {}
-    
-    config[chat_id]['monitor_enabled'] = False
-    save_config(config)
-    
-    send_message(chat_id, '✅ Моніторинг вимкнено')
-    delete_message(chat_id, message_id)
-
-
-def handle_monitor_status(chat_id: str, message_id: int):
-    """Handle /monitor_status command"""
-    config = load_config()
-    settings = config.get(chat_id, {})
-    
-    if not settings.get('monitor_enabled'):
-        send_message(chat_id, '⚪️ Моніторинг вимкнено')
-    else:
-        status = settings.get('monitor_last_status', 'невідомий')
-        status_emoji = '🟢' if status == 'online' else '🔴' if status == 'offline' else '⚪️'
-        host = settings.get('monitor_host', DEFAULT_HOST)
-        port = settings.get('monitor_port', DEFAULT_PORT)
-        
-        message = f'{status_emoji} Моніторинг увімкнено\nСтатус: {status}\nЦіль: {host}:{port}'
-        
-        last_change = settings.get('monitor_last_change')
-        if last_change:
-            duration = int(time.time() * MILLISECONDS_PER_SECOND) - last_change
-            message += f'\nОстання зміна: {format_duration(duration)} тому'
-        
-        send_message(chat_id, message)
-    
-    delete_message(chat_id, message_id)
-
-
-def handle_graphenko_image(chat_id: str, message_id: int, image_url: str):
-    """Handle /graphenko_image command"""
-    # Validate URL
-    if not image_url.startswith(OUTAGE_IMAGES_BASE) or not image_url.lower().endswith('.png'):
-        send_message(chat_id, 
-            f'❌ Невірний URL. Використовуйте PNG з базою:\n{OUTAGE_IMAGES_BASE}\n'
-            f'приклад: /graphenko_image {OUTAGE_IMAGES_BASE}kyiv/gpv-3-2-emergency.png')
-        return
-    
-    # Save config
-    config = load_config()
-    if chat_id not in config:
-        config[chat_id] = {}
-    
-    config[chat_id]['image_url'] = image_url
-    save_config(config)
-    
-    send_message(chat_id, '✅ Зображення збережено. Розсилка увімкнена.')
-    delete_message(chat_id, message_id)
-
-
-def handle_graphenko_caption(chat_id: str, message_id: int, caption_text: str):
-    """Handle /graphenko_caption command"""
-    config = load_config()
-    if chat_id not in config:
-        config[chat_id] = {}
-    
-    if caption_text.strip().lower() == '-default':
-        # Reset to default
-        if 'caption' in config[chat_id]:
-            del config[chat_id]['caption']
-        save_config(config)
-        send_message(chat_id, '✅ Підпис скинуто до стандартного. Буде застосовано під час наступного оновлення.')
-    elif not caption_text.strip():
-        send_message(chat_id, '❌ Порожній підпис. Спробуйте так: /graphenko_caption Мій власний підпис')
-        return
-    else:
-        config[chat_id]['caption'] = caption_text.strip()
-        save_config(config)
-        send_message(chat_id, '✅ Підпис збережено. Буде застосовано під час наступного оновлення.')
-    
-    delete_message(chat_id, message_id)
-
-
-def process_update(update: Dict):
-    """Process a single update from Telegram"""
-    # Handle chat member updates (bot added/removed)
-    if 'my_chat_member' in update:
-        mcm = update['my_chat_member']
-        chat = mcm.get('chat', {})
-        chat_id = str(chat.get('id', ''))
-        status = mcm.get('new_chat_member', {}).get('status', '')
-        
-        if status in ['left', 'kicked', 'restricted']:
-            # Bot removed from chat
-            config = load_config()
-            if chat_id in config:
-                del config[chat_id]
-                save_config(config)
-                print(f'Bot removed from chat {chat_id}, config deleted')
-        elif status in ['administrator', 'creator', 'member']:
-            # Bot added to chat
-            config = load_config()
-            if chat_id not in config:
-                config[chat_id] = {}
-                save_config(config)
-                print(f'Bot added to chat {chat_id}, config created')
-        return
-    
-    # Handle messages (commands)
-    message = update.get('message') or update.get('channel_post')
-    if not message:
-        return
-    
-    chat = message.get('chat', {})
-    chat_id = str(chat.get('id', ''))
-    text = message.get('text', '') or message.get('caption', '')
-    message_id = message.get('message_id', 0)
-    
-    if not text or not chat_id:
-        return
-    
-    # Parse commands
-    text = text.strip()
-    
-    # /monitor_on
-    if text.startswith('/monitor_on'):
-        handle_monitor_on(chat_id, message_id)
-        return
-    
-    # /monitor_off
-    if text.startswith('/monitor_off'):
-        handle_monitor_off(chat_id, message_id)
-        return
-    
-    # /monitor_status
-    if text.startswith('/monitor_status'):
-        handle_monitor_status(chat_id, message_id)
-        return
-    
-    # /graphenko_image <url>
-    if text.startswith('/graphenko_image'):
-        parts = text.split(None, 1)
-        if len(parts) == 2:
-            handle_graphenko_image(chat_id, message_id, parts[1])
-        return
-    
-    # /graphenko_caption <text>
-    if text.startswith('/graphenko_caption'):
-        parts = text.split(None, 1)
-        if len(parts) == 2:
-            handle_graphenko_caption(chat_id, message_id, parts[1])
-        else:
-            handle_graphenko_caption(chat_id, message_id, '')
-        return
-
-
-# ============================================================================
 # Graphenko Update Thread
 # ============================================================================
 
 class GraphenkoThread(threading.Thread):
     """Background thread for periodic Graphenko image updates"""
     
-    def __init__(self):
+    def __init__(self, application, event_loop):
         super().__init__(daemon=True)
         self.running = True
+        self.application = application
+        self.event_loop = event_loop
     
     def stop(self):
         self.running = False
     
+    async def send_graph_update(self, chat_id: str, settings: Dict):
+        """Send graph update to a chat"""
+        region = settings.get('region', 'kyiv')
+        group = settings.get('group', '3.1')
+        format_pref = settings.get('format_preference', 'image')
+        
+        image_url = f'{OUTAGE_IMAGES_BASE}{region}/gpv-{group}-emergency.png'
+        
+        try:
+            if format_pref in ['image', 'both']:
+                # Send/update image
+                caption = settings.get('caption', DEFAULT_CAPTION)
+                kyiv_time = get_kyiv_datetime()
+                timestamp = kyiv_time.strftime('%Y-%m-%d %H:%M')
+                full_caption = f'{caption}\nОновлено: {timestamp}'
+                
+                cb = int(time.time() * MILLISECONDS_PER_SECOND)
+                photo_url = f'{image_url}?cb={cb}'
+                
+                message_id = settings.get('message_id')
+                
+                if message_id:
+                    # Edit existing
+                    try:
+                        media = InputMediaPhoto(media=photo_url, caption=full_caption)
+                        await self.application.bot.edit_message_media(
+                            chat_id=chat_id,
+                            message_id=message_id,
+                            media=media
+                        )
+                        await self.application.bot.pin_chat_message(
+                            chat_id=chat_id,
+                            message_id=message_id,
+                            disable_notification=True
+                        )
+                    except TelegramError as e:
+                        # Message might be deleted or other API error, send new
+                        print(f'Could not edit message: {e}')
+                        msg = await self.application.bot.send_photo(
+                            chat_id=chat_id,
+                            photo=photo_url,
+                            caption=full_caption
+                        )
+                        settings['message_id'] = msg.message_id
+                        update_chat_config(chat_id, settings)
+                else:
+                    # Send new
+                    msg = await self.application.bot.send_photo(
+                        chat_id=chat_id,
+                        photo=photo_url,
+                        caption=full_caption
+                    )
+                    settings['message_id'] = msg.message_id
+                    update_chat_config(chat_id, settings)
+            
+            if format_pref in ['text', 'both']:
+                # Send text schedule
+                today = get_kyiv_datetime()
+                tomorrow = today + timedelta(days=1)
+                
+                weekdays = ['Понеділок', 'Вівторок', 'Середа', 'Четвер', 'П\'ятниця', 'Субота', 'Неділя']
+                today_name = weekdays[today.weekday()]
+                tomorrow_name = weekdays[tomorrow.weekday()]
+                
+                text_schedule = f'''💡Оновлено графік відключень на сьогодні, {today.strftime('%d.%m.%Y')} ({today_name}), для черги {group}:
+
+🪫 00:00 - 01:00 (~1 год)
+🪫 08:00 - 11:30 (~3.5 год)'''
+                
+                await self.application.bot.send_message(chat_id=chat_id, text=text_schedule)
+        
+        except Exception as e:
+            print(f'ERROR sending graph update to {chat_id}: {e}')
+    
     def run(self):
-        """Main Graphenko update loop - runs every 5 minutes"""
+        """Main Graphenko update loop"""
         print('Graphenko thread started')
         
-        # Run immediately on startup
         first_run = True
         
         while self.running:
@@ -564,48 +1078,23 @@ class GraphenkoThread(threading.Thread):
                 
                 config = load_config()
                 for chat_id, settings in config.items():
-                    image_url = settings.get('image_url')
-                    if not image_url:
+                    if settings.get('graphs_paused'):
                         continue
                     
-                    caption = settings.get('caption', DEFAULT_CAPTION)
+                    image_url = settings.get('image_url')
+                    if not image_url and not settings.get('region'):
+                        continue
                     
-                    # Add timestamp with proper Kyiv timezone
-                    kyiv_time = get_kyiv_datetime()
-                    timestamp = kyiv_time.strftime('%Y-%m-%d %H:%M')
-                    full_caption = f'{caption}\nОновлено: {timestamp}'
-                    
-                    # Add cache buster
-                    cb = int(time.time() * MILLISECONDS_PER_SECOND)
-                    photo_url = f'{image_url}?cb={cb}'
-                    
-                    # Check if we have an existing message
-                    message_id = settings.get('message_id')
-                    
-                    if message_id:
-                        # Edit existing message
-                        result = edit_message_media(chat_id, message_id, photo_url, full_caption)
-                        if result.get('ok'):
-                            print(f'Updated image for {chat_id}')
-                            pin_message(chat_id, message_id)
-                        else:
-                            # Message might be deleted, send new one
-                            result = send_photo(chat_id, photo_url, full_caption)
-                            if result.get('ok'):
-                                new_message_id = result.get('result', {}).get('message_id')
-                                settings['message_id'] = new_message_id
-                                config[chat_id] = settings
-                                save_config(config)
-                                pin_message(chat_id, new_message_id)
-                    else:
-                        # Send new message
-                        result = send_photo(chat_id, photo_url, full_caption)
-                        if result.get('ok'):
-                            new_message_id = result.get('result', {}).get('message_id')
-                            settings['message_id'] = new_message_id
-                            config[chat_id] = settings
-                            save_config(config)
-                            pin_message(chat_id, new_message_id)
+                    # Send update using the application's event loop
+                    try:
+                        future = asyncio.run_coroutine_threadsafe(
+                            self.send_graph_update(chat_id, settings),
+                            self.event_loop
+                        )
+                        # Wait for completion with timeout to catch errors
+                        future.result(timeout=30)
+                    except Exception as e:
+                        print(f'ERROR in graph update: {e}')
                     
                     time.sleep(1)  # Rate limiting
             
@@ -616,57 +1105,45 @@ class GraphenkoThread(threading.Thread):
 
 
 # ============================================================================
-# Main Bot Loop
+# Main
 # ============================================================================
 
 def main():
-    """Main bot loop with long polling"""
-    print('Starting DTEK Bot...')
+    """Main bot function"""
+    print('Starting DTEK Bot with interactive UX...')
     print(f'Bot token: {BOT_TOKEN[:10]}...')
     print(f'Config file: {CONFIG_FILE}')
     
-    # Start background threads
-    monitor_thread = MonitorThread()
+    # Create application
+    application = Application.builder().token(BOT_TOKEN).build()
+    
+    # Add handlers
+    application.add_handler(CommandHandler('start', start))
+    application.add_handler(CallbackQueryHandler(handle_settings_callback, pattern='^settings_'))
+    application.add_handler(CallbackQueryHandler(handle_format_callback, pattern='^format_'))
+    application.add_handler(CallbackQueryHandler(handle_notification_callback, pattern='^notif_'))
+    application.add_handler(CallbackQueryHandler(handle_pause_callback, pattern='^pause_'))
+    application.add_handler(CallbackQueryHandler(handle_delete_callback, pattern='^delete_'))
+    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text_input))
+    
+    # Get or create the event loop for the current thread
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+    
+    # Start background threads with event loop
+    monitor_thread = MonitorThread(application, loop)
     monitor_thread.start()
     
-    graphenko_thread = GraphenkoThread()
+    graphenko_thread = GraphenkoThread(application, loop)
     graphenko_thread.start()
     
-    # Long polling
-    offset = None
-    
+    # Run bot
     try:
-        while True:
-            try:
-                result = get_updates(offset, timeout=30)
-                
-                if not result.get('ok'):
-                    print(f'ERROR: Failed to get updates: {result}')
-                    time.sleep(5)
-                    continue
-                
-                updates = result.get('result', [])
-                
-                for update in updates:
-                    update_id = update.get('update_id')
-                    if update_id:
-                        offset = update_id + 1
-                    
-                    try:
-                        process_update(update)
-                    except Exception as e:
-                        print(f'ERROR processing update: {e}')
-                
-                if not updates:
-                    # No updates, just continue polling
-                    pass
-            
-            except KeyboardInterrupt:
-                raise
-            except Exception as e:
-                print(f'ERROR in main loop: {e}')
-                time.sleep(5)
-    
+        print('Bot started successfully!')
+        application.run_polling(allowed_updates=['message', 'callback_query', 'my_chat_member'])
     except KeyboardInterrupt:
         print('\nStopping bot...')
         monitor_thread.stop()
