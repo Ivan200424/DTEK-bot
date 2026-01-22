@@ -1137,7 +1137,7 @@ class GraphenkoThread(threading.Thread):
         
         # Fetch image and compute hash to check if it changed
         try:
-            response = requests.get(image_url, timeout=30)
+            response = requests.get(image_url, timeout=30, verify=True)
             if response.status_code != 200:
                 print(f'Failed to fetch image for {chat_id}: HTTP {response.status_code}')
                 return
