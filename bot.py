@@ -4,6 +4,7 @@ DTEK Bot - Interactive Telegram Bot for Power Monitoring and Graphenko Updates
 Features: TCP monitoring, Graphenko updates, interactive menu-based UX
 """
 
+import asyncio
 import json
 import os
 import socket
@@ -26,7 +27,7 @@ except ImportError:
 BOT_TOKEN = os.getenv('BOT_TOKEN')
 DEFAULT_CHAT_ID = os.getenv('CHAT_ID', '-1003523279109')
 CONFIG_FILE = 'graphenko-chats.json'
-ADMIN_USER_ID = 1026177113
+ADMIN_USER_ID = int(os.getenv('ADMIN_USER_ID', '1026177113'))
 
 # Constants
 DEFAULT_HOST = '93.127.118.86'
@@ -874,10 +875,11 @@ async def handle_text_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
 class MonitorThread(threading.Thread):
     """Background thread for power monitoring"""
     
-    def __init__(self, application):
+    def __init__(self, application, event_loop):
         super().__init__(daemon=True)
         self.running = True
         self.application = application
+        self.event_loop = event_loop
     
     def stop(self):
         self.running = False
@@ -935,15 +937,12 @@ class MonitorThread(threading.Thread):
                         # Status changed!
                         print(f'Status changed for {chat_id}: {previous_status} -> {new_status}')
                         
-                        # Send notification (async)
-                        import asyncio
+                        # Send notification using the application's event loop
                         try:
-                            loop = asyncio.new_event_loop()
-                            asyncio.set_event_loop(loop)
-                            loop.run_until_complete(
-                                self.send_status_notification(chat_id, new_status, last_change)
+                            asyncio.run_coroutine_threadsafe(
+                                self.send_status_notification(chat_id, new_status, last_change),
+                                self.event_loop
                             )
-                            loop.close()
                         except Exception as e:
                             print(f'ERROR in notification: {e}')
                         
@@ -977,10 +976,11 @@ class MonitorThread(threading.Thread):
 class GraphenkoThread(threading.Thread):
     """Background thread for periodic Graphenko image updates"""
     
-    def __init__(self, application):
+    def __init__(self, application, event_loop):
         super().__init__(daemon=True)
         self.running = True
         self.application = application
+        self.event_loop = event_loop
     
     def stop(self):
         self.running = False
@@ -1078,15 +1078,12 @@ class GraphenkoThread(threading.Thread):
                     if not image_url and not settings.get('region'):
                         continue
                     
-                    # Send update (async)
-                    import asyncio
+                    # Send update using the application's event loop
                     try:
-                        loop = asyncio.new_event_loop()
-                        asyncio.set_event_loop(loop)
-                        loop.run_until_complete(
-                            self.send_graph_update(chat_id, settings)
+                        asyncio.run_coroutine_threadsafe(
+                            self.send_graph_update(chat_id, settings),
+                            self.event_loop
                         )
-                        loop.close()
                     except Exception as e:
                         print(f'ERROR in graph update: {e}')
                     
@@ -1120,11 +1117,14 @@ def main():
     application.add_handler(CallbackQueryHandler(handle_delete_callback, pattern='^delete_'))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text_input))
     
-    # Start background threads
-    monitor_thread = MonitorThread(application)
+    # Get the event loop
+    loop = asyncio.get_event_loop()
+    
+    # Start background threads with event loop
+    monitor_thread = MonitorThread(application, loop)
     monitor_thread.start()
     
-    graphenko_thread = GraphenkoThread(application)
+    graphenko_thread = GraphenkoThread(application, loop)
     graphenko_thread.start()
     
     # Run bot
