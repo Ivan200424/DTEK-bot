@@ -1129,9 +1129,14 @@ class GraphenkoThread(threading.Thread):
     async def send_graph_update(self, chat_id: str, settings: Dict):
         """Send graph update to a chat - only if image hash changed"""
         # Skip private chats - only send to channels/groups
-        if int(chat_id) > 0:
-            print(f'Skipping private chat {chat_id} for graph updates')
-            return
+        try:
+            chat_id_int = int(chat_id)
+            if chat_id_int > 0:
+                print(f'Skipping private chat {chat_id} for graph updates')
+                return
+        except (ValueError, TypeError):
+            # If chat_id is not numeric (e.g., test data), skip validation
+            print(f'Warning: Non-numeric chat_id {chat_id}, proceeding with update')
         
         region = settings.get('region', 'kyiv')
         group = settings.get('group', '3.1')
