@@ -5,6 +5,7 @@ Features: TCP monitoring, Graphenko updates, interactive menu-based UX
 """
 
 import asyncio
+import hashlib
 import json
 import os
 import socket
@@ -14,6 +15,12 @@ import time
 import random
 from datetime import datetime, timezone, timedelta
 from typing import Optional, Dict, Any, List
+
+try:
+    import requests
+except ImportError:
+    print('ERROR: requests library not found. Install with: pip install requests>=2.31.0')
+    sys.exit(1)
 
 try:
     from telegram import Update, ReplyKeyboardMarkup, InlineKeyboardMarkup, InlineKeyboardButton, InputMediaPhoto
@@ -1027,10 +1034,10 @@ class MonitorThread(threading.Thread):
         
         if new_status == 'online':
             phrase = get_random_phrase(PHRASES_POWER_APPEARED_BASE, PHRASES_POWER_APPEARED_VARIATIONS)
-            message = f'🟢 *{current_time}* Світло з\'явилося\n🕓 {phrase} *{formatted_duration}*\n🗓 Наступне планове: *{next_outage_time}*'
+            message = f'*🟢 {current_time} Світло з\'явилося*\n🕓 {phrase} {formatted_duration}\n🗓 Наступне планове: *{next_outage_time}*'
         else:
             phrase = get_random_phrase(PHRASES_POWER_GONE_BASE, PHRASES_POWER_GONE_VARIATIONS)
-            message = f'🔴 *{current_time}* Світло зникло\n🕓 {phrase} *{formatted_duration}*\n🗓 Очікуємо за графіком о *{expected_time}*'
+            message = f'*🔴 {current_time} Світло зникло*\n🕓 {phrase} {formatted_duration}\n🗓 Очікуємо за графіком о *{expected_time}*'
         
         try:
             await self.application.bot.send_message(chat_id=chat_id, text=message, parse_mode=ParseMode.MARKDOWN)
@@ -1120,7 +1127,7 @@ class GraphenkoThread(threading.Thread):
         self.running = False
     
     async def send_graph_update(self, chat_id: str, settings: Dict):
-        """Send graph update to a chat"""
+        """Send graph update to a chat - only if image hash changed"""
         region = settings.get('region', 'kyiv')
         group = settings.get('group', '3.1')
         format_pref = settings.get('format_preference', 'image')
@@ -1128,61 +1135,65 @@ class GraphenkoThread(threading.Thread):
         
         image_url = f'{OUTAGE_IMAGES_BASE}{region}/gpv-{group_formatted}-emergency.png'
         
+        # Fetch image and compute hash to check if it changed
+        try:
+            response = requests.get(image_url, timeout=30)
+            if response.status_code != 200:
+                print(f'Failed to fetch image for {chat_id}: HTTP {response.status_code}')
+                return
+            
+            new_hash = hashlib.md5(response.content).hexdigest()
+        except Exception as e:
+            print(f'Error fetching image for {chat_id}: {e}')
+            return
+        
+        # Compare with previous hash
+        last_hash = settings.get('last_graph_hash')
+        if new_hash == last_hash:
+            # Graph hasn't changed - skip update
+            print(f'Graph unchanged for {chat_id}, skipping update')
+            return
+        
+        # Graph changed - publish update
+        print(f'Graph changed for {chat_id}, publishing update')
+        
+        # Update hash in config
+        update_chat_config(chat_id, {'last_graph_hash': new_hash})
+        
         try:
             if format_pref in ['image', 'both']:
-                # Send/update image
-                caption = settings.get('caption', DEFAULT_CAPTION)
-                kyiv_time = get_kyiv_datetime()
-                timestamp = kyiv_time.strftime('%Y-%m-%d %H:%M')
-                full_caption = f'{caption}\nОновлено: {timestamp}'
+                # Prepare caption with Ukrainian weekday names
+                today = get_kyiv_datetime()
+                tomorrow = today + timedelta(days=1)
                 
+                today_name = WEEKDAYS_UK[today.weekday()]
+                tomorrow_name = WEEKDAYS_UK[tomorrow.weekday()]
+                
+                region_name = REGIONS_MAP.get(region, region)
+                
+                caption = (
+                    f'💡 Оновлено графік відключень на *сьогодні, {today.strftime("%d.%m.%Y")} ({today_name})*, '
+                    f'для черги {group}, регіон: {region_name}'
+                )
+                
+                # Send new photo (not edit) with cache buster
                 cb = int(time.time() * MILLISECONDS_PER_SECOND)
                 photo_url = f'{image_url}?cb={cb}'
                 
-                message_id = settings.get('message_id')
-                
-                if message_id:
-                    # Edit existing
-                    try:
-                        media = InputMediaPhoto(media=photo_url, caption=full_caption)
-                        await self.application.bot.edit_message_media(
-                            chat_id=chat_id,
-                            message_id=message_id,
-                            media=media
-                        )
-                        await self.application.bot.pin_chat_message(
-                            chat_id=chat_id,
-                            message_id=message_id,
-                            disable_notification=True
-                        )
-                    except TelegramError as e:
-                        # Message might be deleted or other API error, send new
-                        print(f'Could not edit message: {e}')
-                        msg = await self.application.bot.send_photo(
-                            chat_id=chat_id,
-                            photo=photo_url,
-                            caption=full_caption
-                        )
-                        settings['message_id'] = msg.message_id
-                        update_chat_config(chat_id, settings)
-                else:
-                    # Send new
-                    msg = await self.application.bot.send_photo(
-                        chat_id=chat_id,
-                        photo=photo_url,
-                        caption=full_caption
-                    )
-                    settings['message_id'] = msg.message_id
-                    update_chat_config(chat_id, settings)
+                await self.application.bot.send_photo(
+                    chat_id=chat_id,
+                    photo=photo_url,
+                    caption=caption,
+                    parse_mode=ParseMode.MARKDOWN
+                )
             
             if format_pref in ['text', 'both']:
                 # Send text schedule
                 today = get_kyiv_datetime()
                 tomorrow = today + timedelta(days=1)
                 
-                weekdays = WEEKDAYS_UK
-                today_name = weekdays[today.weekday()]
-                tomorrow_name = weekdays[tomorrow.weekday()]
+                today_name = WEEKDAYS_UK[today.weekday()]
+                tomorrow_name = WEEKDAYS_UK[tomorrow.weekday()]
                 
                 text_schedule = f'''💡Оновлено графік відключень на *сьогодні, {today.strftime('%d.%m.%Y')} ({today_name})*, для черги {group}:
 
