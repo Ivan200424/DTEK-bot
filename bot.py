@@ -182,7 +182,16 @@ def check_tcp_connection(host: str, port: int, timeout: int = 5) -> bool:
 
 
 def calculate_kyiv_offset() -> int:
-    """Calculate the UTC offset for Kyiv timezone (accounting for DST)"""
+    """
+    Calculate the UTC offset for Kyiv timezone (accounting for DST).
+    
+    Ukraine observes DST from last Sunday of March to last Sunday of October:
+    - Winter (standard time): UTC+2
+    - Summer (daylight saving time): UTC+3
+    
+    Note: We implement this manually to avoid external dependencies like pytz,
+    as per project requirements (only requests library allowed).
+    """
     now = datetime.now(timezone.utc)
     year = now.year
     
