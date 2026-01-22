@@ -7,6 +7,7 @@ import { sendTextMessage } from './src/telegram/api.mjs';
 
 // Constants
 const MONITOR_DURATION_MS = 15 * 60 * 1000; // 15 minutes
+// Target chat ID is hardcoded as per requirements (-1003523279109)
 const TARGET_CHAT_ID = '-1003523279109';
 const DEFAULT_HOST = '93.127.118.86';
 const DEFAULT_PORT = 443;
@@ -17,9 +18,15 @@ const DEFAULT_INTERVAL_SEC = 30;
  */
 function getKyivTime() {
   const now = new Date();
-  const kyivTime = new Date(now.toLocaleString('en-US', { timeZone: 'Europe/Kyiv' }));
-  const hours = String(kyivTime.getHours()).padStart(2, '0');
-  const minutes = String(kyivTime.getMinutes()).padStart(2, '0');
+  const formatter = new Intl.DateTimeFormat('en-US', {
+    timeZone: 'Europe/Kyiv',
+    hour: '2-digit',
+    minute: '2-digit',
+    hour12: false
+  });
+  const parts = formatter.formatToParts(now);
+  const hours = parts.find(p => p.type === 'hour')?.value || '00';
+  const minutes = parts.find(p => p.type === 'minute')?.value || '00';
   return `${hours}:${minutes}`;
 }
 

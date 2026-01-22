@@ -2,7 +2,9 @@ name: Monitor Power (every 1 minute)
 
 on:
   schedule:
-    - cron: '* * * * *'  # Every 1 minute
+    # Every 1 minute as per requirements - each run monitors for ~15 minutes
+    # This ensures continuous monitoring with minimal gaps between workflow runs
+    - cron: '* * * * *'
   workflow_dispatch:
 
 permissions:

@@ -53,15 +53,40 @@ export async function getNextPlannedOutage(groupId = GROUP_ID) {
   if (!groupSchedule || !groupSchedule.periods) return null;
 
   const now = new Date();
-  const kyivTime = new Date(now.toLocaleString('en-US', { timeZone: 'Europe/Kyiv' }));
-  const currentDay = kyivTime.getDay(); // 0=Sunday, 1=Monday, etc.
-  const currentHours = kyivTime.getHours();
-  const currentMinutes = kyivTime.getMinutes();
+  
+  // Get current time in Kyiv timezone
+  const formatter = new Intl.DateTimeFormat('en-US', {
+    timeZone: 'Europe/Kyiv',
+    weekday: 'long',
+    hour: '2-digit',
+    minute: '2-digit',
+    hour12: false
+  });
+  const parts = formatter.formatToParts(now);
+  const weekdayPart = parts.find(p => p.type === 'weekday')?.value || '';
+  const currentHours = parseInt(parts.find(p => p.type === 'hour')?.value || '0', 10);
+  const currentMinutes = parseInt(parts.find(p => p.type === 'minute')?.value || '0', 10);
+  
+  // Map weekday to schedule day name
+  const weekdayMap = {
+    'Sunday': 'sunday',
+    'Monday': 'monday',
+    'Tuesday': 'tuesday',
+    'Wednesday': 'wednesday',
+    'Thursday': 'thursday',
+    'Friday': 'friday',
+    'Saturday': 'saturday'
+  };
+  
+  const currentDay = weekdayMap[weekdayPart] || 'monday';
 
   // Look for the next period starting from today
+  const dayNames = ['sunday', 'monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday'];
+  const currentDayIndex = dayNames.indexOf(currentDay);
+  
   for (let dayOffset = 0; dayOffset < 7; dayOffset++) {
-    const checkDay = (currentDay + dayOffset) % 7;
-    const dayName = ['sunday', 'monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday'][checkDay];
+    const checkDayIndex = (currentDayIndex + dayOffset) % 7;
+    const dayName = dayNames[checkDayIndex];
     
     const dayPeriods = groupSchedule.periods[dayName];
     if (!dayPeriods || !Array.isArray(dayPeriods)) continue;

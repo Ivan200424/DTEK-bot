@@ -5,11 +5,34 @@ import net from 'node:net';
 const execAsync = promisify(exec);
 
 /**
+ * Validate host parameter to prevent command injection
+ * @param {string} host - Host to validate
+ * @returns {boolean} true if valid
+ */
+function isValidHost(host) {
+  // Allow IP addresses (IPv4) and simple hostnames
+  // IPv4: xxx.xxx.xxx.xxx
+  // Hostname: alphanumeric, dots, hyphens only
+  const ipv4Regex = /^(\d{1,3}\.){3}\d{1,3}$/;
+  const hostnameRegex = /^[a-zA-Z0-9.-]+$/;
+  
+  if (!host || typeof host !== 'string') return false;
+  if (host.length > 253) return false; // Max hostname length
+  
+  return ipv4Regex.test(host) || hostnameRegex.test(host);
+}
+
+/**
  * Try ICMP ping to check if host is reachable
  * @param {string} host - IP or hostname
  * @returns {Promise<boolean>} true if ping succeeds
  */
 export async function tryPing(host) {
+  if (!isValidHost(host)) {
+    console.error(`Invalid host parameter: ${host}`);
+    return false;
+  }
+  
   try {
     // Use ping with timeout of 5 seconds, 1 packet
     const { stdout } = await execAsync(`ping -c 1 -W 5 ${host}`);
