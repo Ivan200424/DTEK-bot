@@ -805,6 +805,12 @@ async def handle_settings_menu(update: Update, context: ContextTypes.DEFAULT_TYP
     user_id = update.effective_user.id if update.effective_user else 0
     is_admin = user_id == ADMIN_USER_ID
     
+    chat_id = str(update.effective_chat.id)
+    config = get_chat_config(chat_id)
+    
+    # Check if channel is paused
+    is_paused = config.get('light_paused', False) and config.get('graphs_paused', False)
+    
     keyboard = [
         [
             InlineKeyboardButton('🌐 Змінити IP', callback_data='settings_ip'),
@@ -823,9 +829,15 @@ async def handle_settings_menu(update: Update, context: ContextTypes.DEFAULT_TYP
             InlineKeyboardButton('📝 Опис каналу', callback_data='settings_description')
         ],
         [InlineKeyboardButton('⚒️ Техпідтримка', callback_data='settings_support')],
-        [InlineKeyboardButton('🔴 Тимчасово зупинити канал', callback_data='settings_pause')],
-        [InlineKeyboardButton('🗑️ Видалити бота з каналу', callback_data='settings_delete')]
     ]
+    
+    # Dynamic pause/resume button
+    if is_paused:
+        keyboard.append([InlineKeyboardButton('✅ Відновити роботу каналу', callback_data='settings_resume')])
+    else:
+        keyboard.append([InlineKeyboardButton('🔴 Тимчасово зупинити канал', callback_data='settings_pause')])
+    
+    keyboard.append([InlineKeyboardButton('🗑️ Видалити бота з каналу', callback_data='settings_delete')])
     
     if is_admin:
         keyboard.append([
@@ -930,16 +942,22 @@ async def handle_settings_callback(update: Update, context: ContextTypes.DEFAULT
         )
     
     elif action == 'settings_pause':
-        keyboard = InlineKeyboardMarkup([
-            [InlineKeyboardButton('💡 Світло', callback_data='pause_light')],
-            [InlineKeyboardButton('📈 Графіки', callback_data='pause_graphs')],
-            [InlineKeyboardButton('🔴 Все', callback_data='pause_all')],
-            [InlineKeyboardButton('❌ Скасувати', callback_data='pause_cancel')]
-        ])
-        await query.message.reply_text(
-            '🔴 Що призупинити?',
-            reply_markup=keyboard
-        )
+        # Pause entire channel without submenu
+        update_chat_config(chat_id, {
+            'light_paused': True,
+            'graphs_paused': True,
+            'monitor_enabled': False
+        })
+        await query.message.reply_text('⏸️ Канал призупинено. Моніторинг та оновлення графіків вимкнено.')
+    
+    elif action == 'settings_resume':
+        # Resume channel operation
+        update_chat_config(chat_id, {
+            'light_paused': False,
+            'graphs_paused': False,
+            'monitor_enabled': True
+        })
+        await query.message.reply_text('✅ Канал відновлено. Моніторинг та оновлення графіків увімкнено.')
     
     elif action == 'settings_delete':
         keyboard = InlineKeyboardMarkup([
@@ -1000,29 +1018,6 @@ async def handle_notification_callback(update: Update, context: ContextTypes.DEF
         update_chat_config(chat_id, {'notifications_enabled': False})
         await query.message.reply_text('❌ Сповіщення вимкнено')
 
-
-async def handle_pause_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handle pause callbacks"""
-    query = update.callback_query
-    await query.answer()
-    
-    chat_id = str(update.effective_chat.id)
-    
-    if query.data == 'pause_light':
-        update_chat_config(chat_id, {'light_paused': True, 'monitor_enabled': False})
-        await query.message.reply_text('⏸️ Моніторинг світла призупинено')
-    elif query.data == 'pause_graphs':
-        update_chat_config(chat_id, {'graphs_paused': True})
-        await query.message.reply_text('⏸️ Оновлення графіків призупинено')
-    elif query.data == 'pause_all':
-        update_chat_config(chat_id, {
-            'light_paused': True,
-            'graphs_paused': True,
-            'monitor_enabled': False
-        })
-        await query.message.reply_text('⏸️ Весь канал призупинено')
-    elif query.data == 'pause_cancel':
-        await query.message.reply_text('❌ Скасовано')
 
 
 async def handle_delete_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1402,7 +1397,6 @@ def main():
     application.add_handler(CallbackQueryHandler(handle_settings_callback, pattern='^settings_'))
     application.add_handler(CallbackQueryHandler(handle_format_callback, pattern='^format_'))
     application.add_handler(CallbackQueryHandler(handle_notification_callback, pattern='^notif_'))
-    application.add_handler(CallbackQueryHandler(handle_pause_callback, pattern='^pause_'))
     application.add_handler(CallbackQueryHandler(handle_delete_callback, pattern='^delete_'))
     application.add_handler(CallbackQueryHandler(handle_graph_type_callback, pattern='^graph_type_'))
     application.add_handler(CallbackQueryHandler(handle_region_callback, pattern='^region_'))
