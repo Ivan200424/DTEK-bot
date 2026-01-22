@@ -7,6 +7,8 @@
       "monitor_host": "93.127.118.86",
       "monitor_port": 443,
       "monitor_interval_sec": 30,
+      "monitor_last_status": "offline",
+      "monitor_last_change": 1769064553512,
       "monitor_enabled": true
     }
   },
