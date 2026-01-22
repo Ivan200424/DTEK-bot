@@ -35,8 +35,19 @@ DEFAULT_HOST = '93.127.118.86'
 DEFAULT_PORT = 443
 DEFAULT_INTERVAL = 30
 GRAPHENKO_UPDATE_INTERVAL = 60  # Default: 1 minute (configurable per-chat via graph_check_interval)
-OUTAGE_IMAGES_BASE = 'https://raw.githubusercontent.com/Baskerville42/outage-data-ua/refs/heads/main/images/'
+OUTAGE_IMAGES_BASE = 'https://raw.githubusercontent.com/Baskerville42/outage-data-ua/main/images/'
 DEFAULT_CAPTION = '⚡️ Графік стабілізаційних вімкнень. Це повідомлення оновлюється щогодини автоматично.'
+
+# Regions mapping
+REGIONS_MAP = {
+    'kyiv-region': 'Київська область',
+    'kyiv': 'м. Київ',
+    'dnipro': 'Дніпро',
+    'odesa': 'Одеса'
+}
+
+# Ukrainian weekdays
+WEEKDAYS_UK = ['Понеділок', 'Вівторок', 'Середа', 'Четвер', "П'ятниця", 'Субота', 'Неділя']
 
 # Time unit constants
 MILLISECONDS_PER_SECOND = 1000
@@ -280,21 +291,20 @@ def format_duration(milliseconds: int) -> str:
 
 
 def format_duration_short(milliseconds: int) -> str:
-    """Format duration in short format (Xгод Yхв Zс)"""
+    """Format duration in short format (Xгод Yхв)"""
     seconds = milliseconds // MILLISECONDS_PER_SECOND
     minutes = seconds // SECONDS_PER_MINUTE
     hours = minutes // MINUTES_PER_HOUR
     
     remaining_minutes = minutes % MINUTES_PER_HOUR
-    remaining_seconds = seconds % SECONDS_PER_MINUTE
     
     parts = []
     if hours > 0:
         parts.append(f'{hours}год')
     if remaining_minutes > 0:
         parts.append(f'{remaining_minutes}хв')
-    if remaining_seconds > 0 or not parts:
-        parts.append(f'{remaining_seconds}с')
+    if not parts:
+        parts.append(f'{seconds}с')
     
     return ' '.join(parts)
 
@@ -306,6 +316,10 @@ def get_random_phrase(base_phrases: List[str], variation_phrases: List[str]) -> 
     else:
         return random.choice(variation_phrases)
 
+
+def convert_group_to_url_format(group: str) -> str:
+    """Convert group format from 3.1 to 3-1 for URL"""
+    return group.replace('.', '-')
 
 
 def check_tcp_connection(host: str, port: int, timeout: int = 5) -> bool:
@@ -500,6 +514,86 @@ async def handle_graphs_menu(update: Update, context: ContextTypes.DEFAULT_TYPE)
 
 
 async def handle_graphs_now(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle get graphs now - show schedule type selection menu"""
+    keyboard = InlineKeyboardMarkup([
+        [InlineKeyboardButton('📅 Сьогодні + Завтра', callback_data='graph_type_emergency')],
+        [InlineKeyboardButton('📆 На тиждень', callback_data='graph_type_week')],
+        [InlineKeyboardButton('📊 Все відразу', callback_data='graph_type_all')]
+    ])
+    await update.message.reply_text(
+        '📈 Оберіть тип графіку:',
+        reply_markup=keyboard
+    )
+
+
+async def handle_graph_type_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle graph type selection callbacks"""
+    query = update.callback_query
+    await query.answer()
+    
+    chat_id = str(update.effective_chat.id)
+    config = get_chat_config(chat_id)
+    
+    region = config.get('region', 'kyiv')
+    group = config.get('group', '3.1')
+    group_formatted = convert_group_to_url_format(group)
+    
+    # Determine schedule type suffix
+    if query.data == 'graph_type_emergency':
+        suffix = '-emergency'
+        type_name = 'сьогодні + завтра'
+    elif query.data == 'graph_type_week':
+        suffix = '-week'
+        type_name = 'на тиждень'
+    else:  # graph_type_all
+        suffix = ''
+        type_name = 'повний графік'
+    
+    # Construct image URL
+    image_url = f'{OUTAGE_IMAGES_BASE}{region}/gpv-{group_formatted}{suffix}.png'
+    
+    # Send image
+    cb = int(time.time() * MILLISECONDS_PER_SECOND)
+    photo_url = f'{image_url}?cb={cb}'
+    region_name = REGIONS_MAP.get(region, region)
+    caption = f'⚡️ Графік для черги *{group}*\nРегіон: *{region_name}*\nТип: {type_name}'
+    
+    try:
+        await query.message.reply_photo(photo=photo_url, caption=caption, parse_mode=ParseMode.MARKDOWN)
+    except Exception as e:
+        await query.message.reply_text(f'❌ Помилка завантаження зображення: {e}')
+
+
+async def handle_region_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle region selection callbacks"""
+    query = update.callback_query
+    await query.answer()
+    
+    chat_id = str(update.effective_chat.id)
+    
+    # Extract region from callback data (format: region_kyiv-region)
+    region = query.data.replace('region_', '')
+    region_name = REGIONS_MAP.get(region, region)
+    
+    update_chat_config(chat_id, {'region': region})
+    await query.message.reply_text(f'✅ Регіон змінено на: *{region_name}*', parse_mode=ParseMode.MARKDOWN)
+
+
+async def handle_group_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle group selection callbacks"""
+    query = update.callback_query
+    await query.answer()
+    
+    chat_id = str(update.effective_chat.id)
+    
+    # Extract group from callback data (format: group_3.1)
+    group = query.data.replace('group_', '')
+    
+    update_chat_config(chat_id, {'group': group})
+    await query.message.reply_text(f'✅ Групу змінено на: *{group}*', parse_mode=ParseMode.MARKDOWN)
+
+
+async def handle_graphs_now_old(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handle get graphs now"""
     chat_id = str(update.effective_chat.id)
     config = get_chat_config(chat_id)
@@ -507,9 +601,10 @@ async def handle_graphs_now(update: Update, context: ContextTypes.DEFAULT_TYPE):
     region = config.get('region', 'kyiv')
     group = config.get('group', '3.1')
     format_pref = config.get('format_preference', 'image')
+    group_formatted = convert_group_to_url_format(group)
     
     # Construct image URL
-    image_url = f'{OUTAGE_IMAGES_BASE}{region}/gpv-{group}-emergency.png'
+    image_url = f'{OUTAGE_IMAGES_BASE}{region}/gpv-{group_formatted}-emergency.png'
     
     if format_pref in ['image', 'both']:
         # Send image
@@ -527,17 +622,19 @@ async def handle_graphs_now(update: Update, context: ContextTypes.DEFAULT_TYPE):
         today = get_kyiv_datetime()
         tomorrow = today + timedelta(days=1)
         
-        text_schedule = f'''🗓 Оновлено графік відключень на сьогодні, {today.strftime('%d.%m.%Y')} ({today.strftime('%A')}), для черги {group}:
-
-🪫 00:00 - 01:00 (~1 год)
-🪫 08:00 - 11:30 (~3.5 год)
-
-🗓 Оновлено графік відключень на завтра, {tomorrow.strftime('%d.%m.%Y')} ({tomorrow.strftime('%A')}), для черги {group}:
-
-🪫 07:00 - 10:00 (~3 год)
-🪫 12:00 - 13:30 (~1.5 год)'''
+        today_name = WEEKDAYS_UK[today.weekday()]
+        tomorrow_name = WEEKDAYS_UK[tomorrow.weekday()]
         
-        await update.message.reply_text(text_schedule)
+        text_schedule = f'''💡Оновлено графік відключень на *сьогодні, {today.strftime('%d.%m.%Y')} ({today_name})*, для черги {group}:
+
+🪫 *03:30 - 21:00 (~17.5 год)*
+
+💡Оновлено графік відключень на *завтра, {tomorrow.strftime('%d.%m.%Y')} ({tomorrow_name})*, для черги {group}:
+
+🪫 *00:30 - 04:00 (~3.5 год)*
+🪫 *06:00 - 07:30 (~1.5 год)*'''
+        
+        await update.message.reply_text(text_schedule, parse_mode=ParseMode.MARKDOWN)
 
 
 async def handle_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -640,18 +737,30 @@ async def handle_settings_callback(update: Update, context: ContextTypes.DEFAULT
         )
     
     elif action == 'settings_region':
+        keyboard = InlineKeyboardMarkup([
+            [InlineKeyboardButton('🏛 Київська область', callback_data='region_kyiv-region')],
+            [InlineKeyboardButton('🏙 м. Київ', callback_data='region_kyiv')],
+            [InlineKeyboardButton('🏭 Дніпро', callback_data='region_dnipro')],
+            [InlineKeyboardButton('🌊 Одеса', callback_data='region_odesa')]
+        ])
         await query.message.reply_text(
-            '🗺 Введіть регіон:\n\n'
-            'Приклад: kyiv, lviv, odesa'
+            '🗺 Оберіть регіон:',
+            reply_markup=keyboard
         )
-        context.user_data['awaiting'] = 'region'
     
     elif action == 'settings_group':
+        keyboard = InlineKeyboardMarkup([
+            [InlineKeyboardButton('1.1', callback_data='group_1.1'), InlineKeyboardButton('1.2', callback_data='group_1.2')],
+            [InlineKeyboardButton('2.1', callback_data='group_2.1'), InlineKeyboardButton('2.2', callback_data='group_2.2')],
+            [InlineKeyboardButton('3.1', callback_data='group_3.1'), InlineKeyboardButton('3.2', callback_data='group_3.2')],
+            [InlineKeyboardButton('4.1', callback_data='group_4.1'), InlineKeyboardButton('4.2', callback_data='group_4.2')],
+            [InlineKeyboardButton('5.1', callback_data='group_5.1'), InlineKeyboardButton('5.2', callback_data='group_5.2')],
+            [InlineKeyboardButton('6.1', callback_data='group_6.1'), InlineKeyboardButton('6.2', callback_data='group_6.2')]
+        ])
         await query.message.reply_text(
-            '🔢 Введіть номер групи:\n\n'
-            'Приклад: 3.1, 2.2, 1.3'
+            '🔢 Оберіть номер групи:',
+            reply_markup=keyboard
         )
-        context.user_data['awaiting'] = 'group'
     
     elif action == 'settings_notifications':
         current = config.get('notifications_enabled', True)
@@ -829,7 +938,12 @@ async def handle_text_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
         elif text == '📅 Мій графік':
             config = get_chat_config(chat_id)
             group = config.get('group', '3.1')
-            await update.message.reply_text(f'📅 Ваша група: {group}\n\nГрафік оновлюється автоматично.')
+            region = config.get('region', 'kyiv')
+            region_name = REGIONS_MAP.get(region, region)
+            await update.message.reply_text(
+                f'📅 Ваш регіон: *{region_name}*\n📅 Ваша група: *{group}*\n\nГрафік оновлюється автоматично.',
+                parse_mode=ParseMode.MARKDOWN
+            )
         return
     
     # Process input based on what we're awaiting
@@ -847,10 +961,20 @@ async def handle_text_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(f'✅ Групу змінено на: {text.strip()}')
     elif awaiting == 'title':
         update_chat_config(chat_id, {'channel_title': text.strip()})
-        await update.message.reply_text(f'✅ Заголовок змінено')
+        # Try to update channel title via Telegram API
+        try:
+            await context.bot.set_chat_title(chat_id=chat_id, title=text.strip())
+            await update.message.reply_text(f'✅ Заголовок каналу змінено')
+        except Exception as e:
+            await update.message.reply_text(f'✅ Заголовок збережено, але не вдалося змінити в Telegram: {e}')
     elif awaiting == 'description':
         update_chat_config(chat_id, {'channel_description': text.strip()})
-        await update.message.reply_text(f'✅ Опис змінено')
+        # Try to update channel description via Telegram API
+        try:
+            await context.bot.set_chat_description(chat_id=chat_id, description=text.strip())
+            await update.message.reply_text(f'✅ Опис каналу змінено')
+        except Exception as e:
+            await update.message.reply_text(f'✅ Опис збережено, але не вдалося змінити в Telegram: {e}')
     elif awaiting == 'light_interval':
         try:
             interval = int(text.strip())
@@ -891,20 +1015,25 @@ class MonitorThread(threading.Thread):
         """Send power status change notification with randomized phrases"""
         current_time = get_kyiv_time()
         duration = int(time.time() * MILLISECONDS_PER_SECOND) - last_change_time
-        formatted_duration = format_duration(duration)
+        formatted_duration = format_duration_short(duration)
         
-        # Get config for schedule info (stub)
+        # Get config for schedule info
         config = get_chat_config(chat_id)
+        
+        # TODO: Parse actual schedule and find next outage
+        # For now, using placeholder times
+        next_outage_time = '00:30 - 04:00'
+        expected_time = '18:00'
         
         if new_status == 'online':
             phrase = get_random_phrase(PHRASES_POWER_APPEARED_BASE, PHRASES_POWER_APPEARED_VARIATIONS)
-            message = f'🟢 {current_time} Світло з\'явилося\n🕓 {phrase} {formatted_duration}\n🗓 Наступне планове: через 2 години'
+            message = f'🟢 *{current_time}* Світло з\'явилося\n🕓 {phrase} *{formatted_duration}*\n🗓 Наступне планове: *{next_outage_time}*'
         else:
             phrase = get_random_phrase(PHRASES_POWER_GONE_BASE, PHRASES_POWER_GONE_VARIATIONS)
-            message = f'🔴 {current_time} Світло зникло\n🕓 {phrase} {formatted_duration}\n🗓 Очікуємо за графіком о 18:00'
+            message = f'🔴 *{current_time}* Світло зникло\n🕓 {phrase} *{formatted_duration}*\n🗓 Очікуємо за графіком о *{expected_time}*'
         
         try:
-            await self.application.bot.send_message(chat_id=chat_id, text=message)
+            await self.application.bot.send_message(chat_id=chat_id, text=message, parse_mode=ParseMode.MARKDOWN)
             print(f'Status notification sent to {chat_id}: {new_status}')
         except Exception as e:
             print(f'ERROR sending notification to {chat_id}: {e}')
@@ -995,8 +1124,9 @@ class GraphenkoThread(threading.Thread):
         region = settings.get('region', 'kyiv')
         group = settings.get('group', '3.1')
         format_pref = settings.get('format_preference', 'image')
+        group_formatted = convert_group_to_url_format(group)
         
-        image_url = f'{OUTAGE_IMAGES_BASE}{region}/gpv-{group}-emergency.png'
+        image_url = f'{OUTAGE_IMAGES_BASE}{region}/gpv-{group_formatted}-emergency.png'
         
         try:
             if format_pref in ['image', 'both']:
@@ -1050,16 +1180,20 @@ class GraphenkoThread(threading.Thread):
                 today = get_kyiv_datetime()
                 tomorrow = today + timedelta(days=1)
                 
-                weekdays = ['Понеділок', 'Вівторок', 'Середа', 'Четвер', 'П\'ятниця', 'Субота', 'Неділя']
+                weekdays = WEEKDAYS_UK
                 today_name = weekdays[today.weekday()]
                 tomorrow_name = weekdays[tomorrow.weekday()]
                 
-                text_schedule = f'''💡Оновлено графік відключень на сьогодні, {today.strftime('%d.%m.%Y')} ({today_name}), для черги {group}:
+                text_schedule = f'''💡Оновлено графік відключень на *сьогодні, {today.strftime('%d.%m.%Y')} ({today_name})*, для черги {group}:
 
-🪫 00:00 - 01:00 (~1 год)
-🪫 08:00 - 11:30 (~3.5 год)'''
+🪫 *03:30 - 21:00 (~17.5 год)*
+
+💡Оновлено графік відключень на *завтра, {tomorrow.strftime('%d.%m.%Y')} ({tomorrow_name})*, для черги {group}:
+
+🪫 *00:30 - 04:00 (~3.5 год)*
+🪫 *06:00 - 07:30 (~1.5 год)*'''
                 
-                await self.application.bot.send_message(chat_id=chat_id, text=text_schedule)
+                await self.application.bot.send_message(chat_id=chat_id, text=text_schedule, parse_mode=ParseMode.MARKDOWN)
         
         except Exception as e:
             print(f'ERROR sending graph update to {chat_id}: {e}')
@@ -1124,6 +1258,9 @@ def main():
     application.add_handler(CallbackQueryHandler(handle_notification_callback, pattern='^notif_'))
     application.add_handler(CallbackQueryHandler(handle_pause_callback, pattern='^pause_'))
     application.add_handler(CallbackQueryHandler(handle_delete_callback, pattern='^delete_'))
+    application.add_handler(CallbackQueryHandler(handle_graph_type_callback, pattern='^graph_type_'))
+    application.add_handler(CallbackQueryHandler(handle_region_callback, pattern='^region_'))
+    application.add_handler(CallbackQueryHandler(handle_group_callback, pattern='^group_'))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text_input))
     
     # Get or create the event loop for the current thread
