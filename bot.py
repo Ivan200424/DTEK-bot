@@ -339,7 +339,11 @@ def fetch_outage_schedule(region: str, group: str) -> Optional[Dict]:
     try:
         response = requests.get(url, timeout=30)
         if response.status_code == 200:
-            return response.json()
+            try:
+                return response.json()
+            except ValueError as json_error:
+                print(f'Error parsing JSON from outage schedule: {json_error}')
+                return None
     except Exception as e:
         print(f'Error fetching outage schedule: {e}')
     return None
@@ -355,10 +359,10 @@ def parse_outage_periods(schedule_data: Dict, group: str, target_date: datetime)
     group_key = f'GPV{group}'
     
     # Знайти дані для потрібної дати
-    # Timestamp для початку дня (00:00 UTC за потрібною датою)
-    # Оскільки JSON використовує UTC timestamp для 22:00 попереднього дня (Київ 00:00)
-    # потрібно знайти timestamp для target_date мінус 2 години
-    target_timestamp = int(datetime(target_date.year, target_date.month, target_date.day, 0, 0).timestamp()) - 2 * 3600
+    # Timestamp для початку дня (00:00 Kyiv time)
+    # JSON використовує UTC timestamp, потрібно врахувати часовий пояс Києва
+    kyiv_offset_hours = calculate_kyiv_offset()
+    target_timestamp = int(datetime(target_date.year, target_date.month, target_date.day, 0, 0).timestamp()) - kyiv_offset_hours * 3600
     target_key = str(target_timestamp)
     
     if 'fact' not in schedule_data or 'data' not in schedule_data['fact']:
@@ -1321,10 +1325,10 @@ class GraphenkoThread(threading.Thread):
                 )
             
             if format_pref in ['text', 'both']:
-                # Send text schedule
+                # Send text schedule (plain text, no markdown)
                 text_schedule = schedule_text if schedule_text else 'Не вдалося завантажити розклад'
                 
-                await self.application.bot.send_message(chat_id=chat_id, text=text_schedule, parse_mode=ParseMode.MARKDOWN)
+                await self.application.bot.send_message(chat_id=chat_id, text=text_schedule)
         
         except Exception as e:
             print(f'ERROR sending graph update to {chat_id}: {e}')
