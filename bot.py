@@ -1191,8 +1191,7 @@ class GraphenkoThread(threading.Thread):
                 await self.application.bot.send_photo(
                     chat_id=chat_id,
                     photo=photo_url,
-                    caption=caption,
-                    parse_mode=ParseMode.MARKDOWN
+                    caption=caption
                 )
             
             if format_pref in ['text', 'both']:
