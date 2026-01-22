@@ -16,9 +16,10 @@ from datetime import datetime, timezone, timedelta
 from typing import Optional, Dict, Any, List
 
 try:
-    from telegram import Update, ReplyKeyboardMarkup, InlineKeyboardMarkup, InlineKeyboardButton
+    from telegram import Update, ReplyKeyboardMarkup, InlineKeyboardMarkup, InlineKeyboardButton, InputMediaPhoto
     from telegram.ext import Application, CommandHandler, MessageHandler, CallbackQueryHandler, ContextTypes, filters
     from telegram.constants import ParseMode
+    from telegram.error import TelegramError
 except ImportError:
     print('ERROR: python-telegram-bot library not found. Install with: pip install python-telegram-bot>=20.0,<21.0')
     sys.exit(1)
@@ -33,7 +34,7 @@ ADMIN_USER_ID = int(os.getenv('ADMIN_USER_ID', '1026177113'))
 DEFAULT_HOST = '93.127.118.86'
 DEFAULT_PORT = 443
 DEFAULT_INTERVAL = 30
-GRAPHENKO_UPDATE_INTERVAL = 60  # 1 minute in seconds
+GRAPHENKO_UPDATE_INTERVAL = 60  # Default: 1 minute (configurable per-chat via graph_check_interval)
 OUTAGE_IMAGES_BASE = 'https://raw.githubusercontent.com/Baskerville42/outage-data-ua/refs/heads/main/images/'
 DEFAULT_CAPTION = '⚡️ Графік стабілізаційних вімкнень. Це повідомлення оновлюється щогодини автоматично.'
 
@@ -300,9 +301,11 @@ def format_duration_short(milliseconds: int) -> str:
 
 def get_random_phrase(base_phrases: List[str], variation_phrases: List[str]) -> str:
     """Get a random phrase with 70% base, 30% variations"""
-    all_phrases = base_phrases + variation_phrases
-    weights = [7] * len(base_phrases) + [3] * len(variation_phrases)
-    return random.choices(all_phrases, weights=weights, k=1)[0]
+    if random.random() < 0.7:
+        return random.choice(base_phrases)
+    else:
+        return random.choice(variation_phrases)
+
 
 
 def check_tcp_connection(host: str, port: int, timeout: int = 5) -> bool:
@@ -939,10 +942,12 @@ class MonitorThread(threading.Thread):
                         
                         # Send notification using the application's event loop
                         try:
-                            asyncio.run_coroutine_threadsafe(
+                            future = asyncio.run_coroutine_threadsafe(
                                 self.send_status_notification(chat_id, new_status, last_change),
                                 self.event_loop
                             )
+                            # Wait for completion with timeout to catch errors
+                            future.result(timeout=10)
                         except Exception as e:
                             print(f'ERROR in notification: {e}')
                         
@@ -1009,18 +1014,20 @@ class GraphenkoThread(threading.Thread):
                 if message_id:
                     # Edit existing
                     try:
+                        media = InputMediaPhoto(media=photo_url, caption=full_caption)
                         await self.application.bot.edit_message_media(
                             chat_id=chat_id,
                             message_id=message_id,
-                            media={'type': 'photo', 'media': photo_url, 'caption': full_caption}
+                            media=media
                         )
                         await self.application.bot.pin_chat_message(
                             chat_id=chat_id,
                             message_id=message_id,
                             disable_notification=True
                         )
-                    except:
-                        # Send new
+                    except TelegramError as e:
+                        # Message might be deleted or other API error, send new
+                        print(f'Could not edit message: {e}')
                         msg = await self.application.bot.send_photo(
                             chat_id=chat_id,
                             photo=photo_url,
@@ -1080,10 +1087,12 @@ class GraphenkoThread(threading.Thread):
                     
                     # Send update using the application's event loop
                     try:
-                        asyncio.run_coroutine_threadsafe(
+                        future = asyncio.run_coroutine_threadsafe(
                             self.send_graph_update(chat_id, settings),
                             self.event_loop
                         )
+                        # Wait for completion with timeout to catch errors
+                        future.result(timeout=30)
                     except Exception as e:
                         print(f'ERROR in graph update: {e}')
                     
@@ -1117,8 +1126,12 @@ def main():
     application.add_handler(CallbackQueryHandler(handle_delete_callback, pattern='^delete_'))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text_input))
     
-    # Get the event loop
-    loop = asyncio.get_event_loop()
+    # Get or create the event loop for the current thread
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
     
     # Start background threads with event loop
     monitor_thread = MonitorThread(application, loop)
