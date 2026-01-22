@@ -112,8 +112,8 @@ PHRASES_POWER_GONE_VARIATIONS = [
     "Інтервал зі світлом:"
 ]
 
-# Menu keyboards
-MAIN_MENU_KEYBOARD = [
+# Menu keyboards - base keyboards without dynamic buttons
+MAIN_MENU_KEYBOARD_BASE = [
     ['📊 Статус', '💡 Моніторинг'],
     ['📈 Графіки', '⚙️ Налаштування'],
     ['❓ Допомога']
@@ -134,6 +134,9 @@ GRAPHS_MENU_KEYBOARD = [
 HELP_MENU_KEYBOARD = [
     ['🔙 Головне меню']
 ]
+
+# Keep backward compatibility
+MAIN_MENU_KEYBOARD = MAIN_MENU_KEYBOARD_BASE
 
 # ============================================================================
 # Configuration Management
@@ -214,6 +217,34 @@ def update_chat_config(chat_id: str, updates: Dict):
         config[chat_id] = get_chat_config(chat_id)
     config[chat_id].update(updates)
     save_config(config)
+
+
+# ============================================================================
+# Keyboard Helper Functions
+# ============================================================================
+
+def get_pause_resume_button_text(chat_id: str) -> str:
+    """Get the appropriate pause/resume button text based on current state"""
+    config = get_chat_config(chat_id)
+    is_paused = config.get('light_paused', False) and config.get('graphs_paused', False)
+    
+    if is_paused:
+        return '✅ Відновити роботу каналу'
+    else:
+        return '🔴 Тимчасово зупинити канал'
+
+
+def build_settings_keyboard(chat_id: str) -> list:
+    """Build settings menu keyboard with dynamic pause/resume button"""
+    pause_resume_text = get_pause_resume_button_text(chat_id)
+    
+    keyboard = [
+        ['📊 Статус', '💡 Моніторинг'],
+        ['📈 Графіки', '⚙️ Налаштування'],
+        [pause_resume_text],
+        ['❓ Допомога']
+    ]
+    return keyboard
 
 
 # ============================================================================
@@ -477,7 +508,8 @@ def check_tcp_connection(host: str, port: int, timeout: int = 5) -> bool:
 
 async def show_main_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Show the main menu"""
-    keyboard = ReplyKeyboardMarkup(MAIN_MENU_KEYBOARD, resize_keyboard=True)
+    chat_id = str(update.effective_chat.id)
+    keyboard = ReplyKeyboardMarkup(build_settings_keyboard(chat_id), resize_keyboard=True)
     await update.message.reply_text(
         '🏠 Головне меню\n\nОберіть опцію:',
         reply_markup=keyboard
@@ -499,7 +531,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         'last_user_id': user.id if user else None
     })
     
-    keyboard = ReplyKeyboardMarkup(MAIN_MENU_KEYBOARD, resize_keyboard=True)
+    keyboard = ReplyKeyboardMarkup(build_settings_keyboard(chat_id), resize_keyboard=True)
     
     welcome_text = (
         f'👋 Вітаю, {user.full_name if user else "користувач"}!\n\n'
@@ -829,15 +861,8 @@ async def handle_settings_menu(update: Update, context: ContextTypes.DEFAULT_TYP
             InlineKeyboardButton('📝 Опис каналу', callback_data='settings_description')
         ],
         [InlineKeyboardButton('⚒️ Техпідтримка', callback_data='settings_support')],
+        [InlineKeyboardButton('🗑️ Видалити бота з каналу', callback_data='settings_delete')]
     ]
-    
-    # Dynamic pause/resume button
-    if is_paused:
-        keyboard.append([InlineKeyboardButton('✅ Відновити роботу каналу', callback_data='settings_resume')])
-    else:
-        keyboard.append([InlineKeyboardButton('🔴 Тимчасово зупинити канал', callback_data='settings_pause')])
-    
-    keyboard.append([InlineKeyboardButton('🗑️ Видалити бота з каналу', callback_data='settings_delete')])
     
     if is_admin:
         keyboard.append([
@@ -847,8 +872,17 @@ async def handle_settings_menu(update: Update, context: ContextTypes.DEFAULT_TYP
     
     reply_markup = InlineKeyboardMarkup(keyboard)
     
+    # Build reply keyboard with dynamic pause/resume button
+    reply_keyboard = ReplyKeyboardMarkup(build_settings_keyboard(chat_id), resize_keyboard=True)
+    
     await update.message.reply_text(
         '⚙️ Налаштування бота\n\nОберіть параметр для зміни:',
+        reply_markup=reply_keyboard
+    )
+    
+    # Send inline keyboard as separate message for other settings
+    await update.message.reply_text(
+        'Додаткові налаштування:',
         reply_markup=reply_markup
     )
 
@@ -940,24 +974,6 @@ async def handle_settings_callback(update: Update, context: ContextTypes.DEFAULT
             'З питаннями звертайтесь: @support_username\n'
             'Email: support@example.com'
         )
-    
-    elif action == 'settings_pause':
-        # Pause entire channel without submenu
-        update_chat_config(chat_id, {
-            'light_paused': True,
-            'graphs_paused': True,
-            'monitor_enabled': False
-        })
-        await query.message.reply_text('⏸️ Канал призупинено. Моніторинг та оновлення графіків вимкнено.')
-    
-    elif action == 'settings_resume':
-        # Resume channel operation
-        update_chat_config(chat_id, {
-            'light_paused': False,
-            'graphs_paused': False,
-            'monitor_enabled': True
-        })
-        await query.message.reply_text('✅ Канал відновлено. Моніторинг та оновлення графіків увімкнено.')
     
     elif action == 'settings_delete':
         keyboard = InlineKeyboardMarkup([
@@ -1078,6 +1094,32 @@ async def handle_text_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text(
                 f'📅 Ваш регіон: *{region_name}*\n📅 Ваша група: *{group}*\n\nГрафік оновлюється автоматично.',
                 parse_mode=ParseMode.MARKDOWN
+            )
+        elif text == '🔴 Тимчасово зупинити канал':
+            # Pause entire channel
+            update_chat_config(chat_id, {
+                'light_paused': True,
+                'graphs_paused': True,
+                'monitor_enabled': False
+            })
+            # Update reply keyboard with new button state
+            reply_keyboard = ReplyKeyboardMarkup(build_settings_keyboard(chat_id), resize_keyboard=True)
+            await update.message.reply_text(
+                '⏸️ Канал призупинено. Моніторинг та оновлення графіків вимкнено.',
+                reply_markup=reply_keyboard
+            )
+        elif text == '✅ Відновити роботу каналу':
+            # Resume channel operation
+            update_chat_config(chat_id, {
+                'light_paused': False,
+                'graphs_paused': False,
+                'monitor_enabled': True
+            })
+            # Update reply keyboard with new button state
+            reply_keyboard = ReplyKeyboardMarkup(build_settings_keyboard(chat_id), resize_keyboard=True)
+            await update.message.reply_text(
+                '✅ Канал відновлено. Моніторинг та оновлення графіків увімкнено.',
+                reply_markup=reply_keyboard
             )
         return
     
