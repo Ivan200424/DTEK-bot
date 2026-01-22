@@ -10,7 +10,7 @@ import socket
 import sys
 import threading
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from typing import Optional, Dict, Any
 
 try:
@@ -177,12 +177,54 @@ def check_tcp_connection(host: str, port: int, timeout: int = 5) -> bool:
 
 def get_kyiv_time() -> str:
     """Get current time in Kyiv timezone (HH:MM format)"""
-    # UTC+2 (standard) or UTC+3 (DST) - simplified to UTC+2 for now
+    # Ukraine is UTC+2 in winter (standard) and UTC+3 in summer (DST)
+    # DST: last Sunday of March to last Sunday of October
     now = datetime.now(timezone.utc)
-    # Note: This is a simplified version. For production, use pytz or zoneinfo
-    kyiv_offset = 2  # hours
-    kyiv_time = datetime.fromtimestamp(now.timestamp() + kyiv_offset * 3600)
+    
+    # Simplified DST calculation
+    year = now.year
+    
+    # Last Sunday of March at 01:00 UTC
+    march_last_day = datetime(year, 3, 31, 1, 0, 0, tzinfo=timezone.utc)
+    dst_start = march_last_day - timedelta(days=(march_last_day.weekday() + 1) % 7)
+    
+    # Last Sunday of October at 01:00 UTC
+    oct_last_day = datetime(year, 10, 31, 1, 0, 0, tzinfo=timezone.utc)
+    dst_end = oct_last_day - timedelta(days=(oct_last_day.weekday() + 1) % 7)
+    
+    # Determine offset
+    if dst_start <= now < dst_end:
+        offset_hours = 3  # DST (summer)
+    else:
+        offset_hours = 2  # Standard (winter)
+    
+    kyiv_time = datetime.fromtimestamp(now.timestamp() + offset_hours * 3600)
     return kyiv_time.strftime('%H:%M')
+
+
+def get_kyiv_datetime() -> datetime:
+    """Get current datetime in Kyiv timezone"""
+    # Ukraine is UTC+2 in winter (standard) and UTC+3 in summer (DST)
+    now = datetime.now(timezone.utc)
+    
+    # Simplified DST calculation
+    year = now.year
+    
+    # Last Sunday of March at 01:00 UTC
+    march_last_day = datetime(year, 3, 31, 1, 0, 0, tzinfo=timezone.utc)
+    dst_start = march_last_day - timedelta(days=(march_last_day.weekday() + 1) % 7)
+    
+    # Last Sunday of October at 01:00 UTC
+    oct_last_day = datetime(year, 10, 31, 1, 0, 0, tzinfo=timezone.utc)
+    dst_end = oct_last_day - timedelta(days=(oct_last_day.weekday() + 1) % 7)
+    
+    # Determine offset
+    if dst_start <= now < dst_end:
+        offset_hours = 3  # DST (summer)
+    else:
+        offset_hours = 2  # Standard (winter)
+    
+    return datetime.fromtimestamp(now.timestamp() + offset_hours * 3600)
 
 
 def format_duration(milliseconds: int) -> str:
@@ -525,9 +567,8 @@ class GraphenkoThread(threading.Thread):
                     
                     caption = settings.get('caption', DEFAULT_CAPTION)
                     
-                    # Add timestamp
-                    now = datetime.now(timezone.utc)
-                    kyiv_time = datetime.fromtimestamp(now.timestamp() + 2 * 3600)
+                    # Add timestamp with proper Kyiv timezone
+                    kyiv_time = get_kyiv_datetime()
                     timestamp = kyiv_time.strftime('%Y-%m-%d %H:%M')
                     full_caption = f'{caption}\nОновлено: {timestamp}'
                     
