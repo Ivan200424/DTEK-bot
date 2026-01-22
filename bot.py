@@ -46,6 +46,7 @@ DEFAULT_PORT = 443
 DEFAULT_INTERVAL = 30
 GRAPHENKO_UPDATE_INTERVAL = 60  # Default: 1 minute (configurable per-chat via graph_check_interval)
 OUTAGE_IMAGES_BASE = 'https://raw.githubusercontent.com/Baskerville42/outage-data-ua/main/images/'
+OUTAGE_DATA_BASE = 'https://raw.githubusercontent.com/Baskerville42/outage-data-ua/main/data/'
 DEFAULT_CAPTION = '⚡️ Графік стабілізаційних вімкнень. Це повідомлення оновлюється щогодини автоматично.'
 
 # Regions mapping
@@ -330,6 +331,128 @@ def get_random_phrase(base_phrases: List[str], variation_phrases: List[str]) -> 
 def convert_group_to_url_format(group: str) -> str:
     """Convert group format from 3.1 to 3-1 for URL"""
     return group.replace('.', '-')
+
+
+def fetch_outage_schedule(region: str, group: str) -> Optional[Dict]:
+    """Fetch outage schedule data from Baskerville42/outage-data-ua repository"""
+    url = f'{OUTAGE_DATA_BASE}{region}.json'
+    try:
+        response = requests.get(url, timeout=30)
+        if response.status_code == 200:
+            return response.json()
+    except Exception as e:
+        print(f'Error fetching outage schedule: {e}')
+    return None
+
+
+def parse_outage_periods(schedule_data: Dict, group: str, target_date: datetime) -> List[str]:
+    """Parse outage periods for a specific group and date
+    
+    Returns list of formatted periods like "03:30 - 21:00 (~17.5 год)"
+    """
+    # Конвертувати групу з формату "3.1" в "GPV3.1"
+    # Ключі в JSON мають формат "GPV3.1" з крапкою
+    group_key = f'GPV{group}'
+    
+    # Знайти дані для потрібної дати
+    # Timestamp для початку дня (00:00 UTC за потрібною датою)
+    # Оскільки JSON використовує UTC timestamp для 22:00 попереднього дня (Київ 00:00)
+    # потрібно знайти timestamp для target_date мінус 2 години
+    target_timestamp = int(datetime(target_date.year, target_date.month, target_date.day, 0, 0).timestamp()) - 2 * 3600
+    target_key = str(target_timestamp)
+    
+    if 'fact' not in schedule_data or 'data' not in schedule_data['fact']:
+        return []
+    
+    day_data = schedule_data['fact']['data'].get(target_key)
+    if not day_data or group_key not in day_data:
+        return []
+    
+    hours_data = day_data[group_key]
+    
+    # Парсити години - знаходити послідовності "no" або "maybe"
+    periods = []
+    start_hour = None
+    
+    for hour in range(1, 25):
+        hour_str = str(hour)
+        status = hours_data.get(hour_str, 'yes')
+        
+        # Вважаємо "no" та "maybe" як відключення
+        is_outage = status in ['no', 'maybe']
+        
+        if is_outage and start_hour is None:
+            start_hour = hour
+        elif not is_outage and start_hour is not None:
+            # Закінчити період
+            end_hour = hour
+            periods.append((start_hour, end_hour))
+            start_hour = None
+    
+    # Якщо період триває до кінця дня
+    if start_hour is not None:
+        periods.append((start_hour, 25))
+    
+    # Форматувати як "HH:30 - HH:00 (~X.X год)"
+    # Примітка: кожна година починається з :30 попередньої години
+    # Наприклад: година "4" = 03:30-04:30
+    formatted_periods = []
+    for start, end in periods:
+        # start=4 means 03:30
+        start_time = f'{(start-1):02d}:30'
+        # end=21 means 21:00
+        if end == 25:
+            end_time = '24:00'
+        else:
+            end_time = f'{(end-1):02d}:30'
+        
+        # Розрахувати тривалість
+        duration_hours = end - start
+        if duration_hours == int(duration_hours):
+            duration_str = f'~{int(duration_hours)} год'
+        else:
+            duration_str = f'~{duration_hours} год'
+        
+        formatted_periods.append(f'{start_time} - {end_time} ({duration_str})')
+    
+    return formatted_periods
+
+
+def format_schedule_text(region: str, group: str) -> str:
+    """Format complete schedule text for today and tomorrow"""
+    schedule_data = fetch_outage_schedule(region, group)
+    if not schedule_data:
+        return ""
+    
+    today = get_kyiv_datetime()
+    tomorrow = today + timedelta(days=1)
+    
+    today_name = WEEKDAYS_UK[today.weekday()]
+    tomorrow_name = WEEKDAYS_UK[tomorrow.weekday()]
+    
+    # Парсити періоди для сьогодні
+    today_periods = parse_outage_periods(schedule_data, group, today)
+    
+    # Парсити періоди для завтра
+    tomorrow_periods = parse_outage_periods(schedule_data, group, tomorrow)
+    
+    text = f'💡Оновлено графік відключень на сьогодні, {today.strftime("%d.%m.%Y")} ({today_name}), для черги {group}:\n\n'
+    
+    if today_periods:
+        for period in today_periods:
+            text += f'🪫 {period}\n'
+    else:
+        text += '✅ Відключень не заплановано\n'
+    
+    text += f'\n💡Оновлено графік відключень на завтра, {tomorrow.strftime("%d.%m.%Y")} ({tomorrow_name}), для черги {group}:\n\n'
+    
+    if tomorrow_periods:
+        for period in tomorrow_periods:
+            text += f'🪫 {period}\n'
+    else:
+        text += '✅ Відключень не заплановано\n'
+    
+    return text
 
 
 def check_tcp_connection(host: str, port: int, timeout: int = 5) -> bool:
@@ -1180,20 +1303,12 @@ class GraphenkoThread(threading.Thread):
         update_chat_config(chat_id, {'last_graph_hash': new_hash})
         
         try:
+            # Отримати текстовий розклад
+            schedule_text = format_schedule_text(region, group)
+            
             if format_pref in ['image', 'both']:
-                # Prepare caption with Ukrainian weekday names
-                today = get_kyiv_datetime()
-                tomorrow = today + timedelta(days=1)
-                
-                today_name = WEEKDAYS_UK[today.weekday()]
-                tomorrow_name = WEEKDAYS_UK[tomorrow.weekday()]
-                
-                region_name = REGIONS_MAP.get(region, region)
-                
-                caption = (
-                    f'💡Оновлено графік відключень на сьогодні, {today.strftime("%d.%m.%Y")} ({today_name}), '
-                    f'для черги {group}'
-                )
+                # Використовувати schedule_text як caption або fallback
+                caption = schedule_text if schedule_text else f'💡Оновлено графік для черги {group}'
                 
                 # Send new photo (not edit) with cache buster
                 cb = int(time.time() * MILLISECONDS_PER_SECOND)
@@ -1207,20 +1322,7 @@ class GraphenkoThread(threading.Thread):
             
             if format_pref in ['text', 'both']:
                 # Send text schedule
-                today = get_kyiv_datetime()
-                tomorrow = today + timedelta(days=1)
-                
-                today_name = WEEKDAYS_UK[today.weekday()]
-                tomorrow_name = WEEKDAYS_UK[tomorrow.weekday()]
-                
-                text_schedule = f'''💡Оновлено графік відключень на *сьогодні, {today.strftime('%d.%m.%Y')} ({today_name})*, для черги {group}:
-
-🪫 *03:30 - 21:00 (~17.5 год)*
-
-💡Оновлено графік відключень на *завтра, {tomorrow.strftime('%d.%m.%Y')} ({tomorrow_name})*, для черги {group}:
-
-🪫 *00:30 - 04:00 (~3.5 год)*
-🪫 *06:00 - 07:30 (~1.5 год)*'''
+                text_schedule = schedule_text if schedule_text else 'Не вдалося завантажити розклад'
                 
                 await self.application.bot.send_message(chat_id=chat_id, text=text_schedule, parse_mode=ParseMode.MARKDOWN)
         
