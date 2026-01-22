@@ -247,7 +247,7 @@ def build_settings_keyboard(chat_id: str) -> list:
     
     # Copy base keyboard and insert pause/resume button
     keyboard = [row[:] for row in MAIN_MENU_KEYBOARD_BASE]  # Deep copy of rows
-    keyboard.insert(5, [pause_resume_text])  # Insert before "⚒️ Техпідтримка, 🗑️ Видалити бота"
+    keyboard.insert(5, [pause_resume_text])  # Insert before "⚒️ Техпідтримка і 🗑️ Видалити бота"
     return keyboard
 
 
