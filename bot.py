@@ -1128,10 +1128,23 @@ class GraphenkoThread(threading.Thread):
     
     async def send_graph_update(self, chat_id: str, settings: Dict):
         """Send graph update to a chat - only if image hash changed"""
+        # Skip private chats - only send to channels/groups
+        try:
+            chat_id_int = int(chat_id)
+            if chat_id_int > 0:
+                print(f'Skipping private chat {chat_id} for graph updates')
+                return
+        except (ValueError, TypeError):
+            # If chat_id is not numeric (e.g., test data), skip validation
+            print(f'Warning: Non-numeric chat_id {chat_id}, proceeding with update')
+        
         region = settings.get('region', 'kyiv')
         group = settings.get('group', '3.1')
         format_pref = settings.get('format_preference', 'image')
         group_formatted = convert_group_to_url_format(group)
+        
+        # Log region for diagnostics
+        print(f'Using region: {region} for chat {chat_id}')
         
         image_url = f'{OUTAGE_IMAGES_BASE}{region}/gpv-{group_formatted}-emergency.png'
         
@@ -1172,8 +1185,8 @@ class GraphenkoThread(threading.Thread):
                 region_name = REGIONS_MAP.get(region, region)
                 
                 caption = (
-                    f'💡 Оновлено графік відключень на *сьогодні, {today.strftime("%d.%m.%Y")} ({today_name})*, '
-                    f'для черги {group}, регіон: {region_name}'
+                    f'💡Оновлено графік відключень на сьогодні, {today.strftime("%d.%m.%Y")} ({today_name}), '
+                    f'для черги {group}'
                 )
                 
                 # Send new photo (not edit) with cache buster
@@ -1183,8 +1196,7 @@ class GraphenkoThread(threading.Thread):
                 await self.application.bot.send_photo(
                     chat_id=chat_id,
                     photo=photo_url,
-                    caption=caption,
-                    parse_mode=ParseMode.MARKDOWN
+                    caption=caption
                 )
             
             if format_pref in ['text', 'both']:
@@ -1218,7 +1230,18 @@ class GraphenkoThread(threading.Thread):
         while self.running:
             try:
                 if not first_run:
-                    time.sleep(GRAPHENKO_UPDATE_INTERVAL)
+                    # Calculate minimum interval across all chats
+                    config = load_config()
+                    if config:
+                        min_interval = min(
+                            settings.get('graph_check_interval', GRAPHENKO_UPDATE_INTERVAL)
+                            for settings in config.values()
+                        )
+                    else:
+                        min_interval = GRAPHENKO_UPDATE_INTERVAL
+                    
+                    print(f'Sleeping for {min_interval} seconds until next graph check')
+                    time.sleep(min_interval)
                 first_run = False
                 
                 config = load_config()
