@@ -165,23 +165,18 @@ def save_config(config: Dict[str, Dict]) -> bool:
 def check_tcp_connection(host: str, port: int, timeout: int = 5) -> bool:
     """Check if TCP connection to host:port succeeds"""
     try:
-        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        sock.settimeout(timeout)
-        result = sock.connect_ex((host, port))
-        sock.close()
-        return result == 0
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+            sock.settimeout(timeout)
+            result = sock.connect_ex((host, port))
+            return result == 0
     except Exception as e:
         print(f'ERROR: TCP check failed for {host}:{port}: {e}')
         return False
 
 
-def get_kyiv_time() -> str:
-    """Get current time in Kyiv timezone (HH:MM format)"""
-    # Ukraine is UTC+2 in winter (standard) and UTC+3 in summer (DST)
-    # DST: last Sunday of March to last Sunday of October
+def calculate_kyiv_offset() -> int:
+    """Calculate the UTC offset for Kyiv timezone (accounting for DST)"""
     now = datetime.now(timezone.utc)
-    
-    # Simplified DST calculation
     year = now.year
     
     # Last Sunday of March at 01:00 UTC
@@ -194,36 +189,23 @@ def get_kyiv_time() -> str:
     
     # Determine offset
     if dst_start <= now < dst_end:
-        offset_hours = 3  # DST (summer)
+        return 3  # DST (summer)
     else:
-        offset_hours = 2  # Standard (winter)
-    
+        return 2  # Standard (winter)
+
+
+def get_kyiv_time() -> str:
+    """Get current time in Kyiv timezone (HH:MM format)"""
+    now = datetime.now(timezone.utc)
+    offset_hours = calculate_kyiv_offset()
     kyiv_time = datetime.fromtimestamp(now.timestamp() + offset_hours * 3600)
     return kyiv_time.strftime('%H:%M')
 
 
 def get_kyiv_datetime() -> datetime:
     """Get current datetime in Kyiv timezone"""
-    # Ukraine is UTC+2 in winter (standard) and UTC+3 in summer (DST)
     now = datetime.now(timezone.utc)
-    
-    # Simplified DST calculation
-    year = now.year
-    
-    # Last Sunday of March at 01:00 UTC
-    march_last_day = datetime(year, 3, 31, 1, 0, 0, tzinfo=timezone.utc)
-    dst_start = march_last_day - timedelta(days=(march_last_day.weekday() + 1) % 7)
-    
-    # Last Sunday of October at 01:00 UTC
-    oct_last_day = datetime(year, 10, 31, 1, 0, 0, tzinfo=timezone.utc)
-    dst_end = oct_last_day - timedelta(days=(oct_last_day.weekday() + 1) % 7)
-    
-    # Determine offset
-    if dst_start <= now < dst_end:
-        offset_hours = 3  # DST (summer)
-    else:
-        offset_hours = 2  # Standard (winter)
-    
+    offset_hours = calculate_kyiv_offset()
     return datetime.fromtimestamp(now.timestamp() + offset_hours * 3600)
 
 
@@ -555,9 +537,14 @@ class GraphenkoThread(threading.Thread):
         """Main Graphenko update loop - runs every 5 minutes"""
         print('Graphenko thread started')
         
+        # Run immediately on startup
+        first_run = True
+        
         while self.running:
             try:
-                time.sleep(300)  # 5 minutes
+                if not first_run:
+                    time.sleep(300)  # 5 minutes
+                first_run = False
                 
                 config = load_config()
                 for chat_id, settings in config.items():
