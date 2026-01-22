@@ -32,7 +32,7 @@ except ImportError:
     sys.exit(1)
 
 # Bot version
-BOT_VERSION = '1.1.0'
+BOT_VERSION = '1.2.0'
 
 # Configuration from environment variables
 BOT_TOKEN = os.getenv('BOT_TOKEN')
@@ -503,13 +503,11 @@ def format_schedule_text(region: str, group: str) -> str:
     else:
         text += '✅ Відключень не заплановано\n'
     
-    text += f'\n💡Оновлено графік відключень на завтра, {tomorrow.strftime("%d.%m.%Y")} ({tomorrow_name}), для черги {group}:\n\n'
-    
+    # Only add tomorrow section if data is available
     if tomorrow_periods:
+        text += f'\n💡Оновлено графік відключень на завтра, {tomorrow.strftime("%d.%m.%Y")} ({tomorrow_name}), для черги {group}:\n\n'
         for period in tomorrow_periods:
             text += f'🪫 {period}\n'
-    else:
-        text += '✅ Відключень не заплановано\n'
     
     return text
 
