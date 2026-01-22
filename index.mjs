@@ -308,7 +308,56 @@ async function processCommandUpdates(updates) {
     const text = msg.text || msg.caption || '';
     if (!text) continue;
 
-    // 1) Handle: /graphenko_caption <caption text> or /graphenko_caption -default
+    // 1) Handle: /monitor_on
+    if (text.match(/^\s*\/monitor_on(?:@\w+)?\s*$/i)) {
+      if (!messageMap[chatId]) messageMap[chatId] = {};
+      messageMap[chatId].monitor_enabled = true;
+      messageMap[chatId].monitor_host = messageMap[chatId].monitor_host || '93.127.118.86';
+      messageMap[chatId].monitor_port = messageMap[chatId].monitor_port !== undefined ? messageMap[chatId].monitor_port : 443;
+      messageMap[chatId].monitor_interval_sec = messageMap[chatId].monitor_interval_sec || 30;
+      mapDirty = true;
+      await sendTextMessage(chatId, `✅ Моніторинг увімкнено\nЦіль: ${messageMap[chatId].monitor_host}:${messageMap[chatId].monitor_port}\nІнтервал: ${messageMap[chatId].monitor_interval_sec}с`);
+      if (msg.message_id) await deleteMessage(chatId, msg.message_id);
+      handled.push(chatId);
+      continue;
+    }
+
+    // 2) Handle: /monitor_off
+    if (text.match(/^\s*\/monitor_off(?:@\w+)?\s*$/i)) {
+      if (!messageMap[chatId]) messageMap[chatId] = {};
+      messageMap[chatId].monitor_enabled = false;
+      mapDirty = true;
+      await sendTextMessage(chatId, '✅ Моніторинг вимкнено');
+      if (msg.message_id) await deleteMessage(chatId, msg.message_id);
+      handled.push(chatId);
+      continue;
+    }
+
+    // 3) Handle: /monitor_status
+    if (text.match(/^\s*\/monitor_status(?:@\w+)?\s*$/i)) {
+      const config = messageMap[chatId];
+      if (!config || !config.monitor_enabled) {
+        await sendTextMessage(chatId, '⚪️ Моніторинг вимкнено');
+      } else {
+        const status = config.monitor_last_status || 'невідомий';
+        const statusEmoji = status === 'online' ? '🟢' : status === 'offline' ? '🔴' : '⚪️';
+        const host = config.monitor_host || '93.127.118.86';
+        const port = config.monitor_port !== undefined ? config.monitor_port : 443;
+        const lastChange = config.monitor_last_change;
+        let message = `${statusEmoji} Моніторинг увімкнено\nСтатус: ${status}\nЦіль: ${host}:${port}`;
+        if (lastChange) {
+          const duration = Date.now() - lastChange;
+          const { formatDuration } = await import('./src/utils/monitor.mjs');
+          message += `\nОстання зміна: ${formatDuration(duration)} тому`;
+        }
+        await sendTextMessage(chatId, message);
+      }
+      if (msg.message_id) await deleteMessage(chatId, msg.message_id);
+      handled.push(chatId);
+      continue;
+    }
+
+    // 4) Handle: /graphenko_caption <caption text> or /graphenko_caption -default
     let capMatch = text.match(/^\s*\/graphenko_caption(?:@\w+)?\s+([\s\S]+)$/i);
     if (capMatch) {
       const raw = capMatch[1];
@@ -345,7 +394,7 @@ async function processCommandUpdates(updates) {
       continue;
     }
 
-    // 2) Handle: "/graphenko_image <url>" possibly with bot mention
+    // 5) Handle: "/graphenko_image <url>" possibly with bot mention
     const m = text.match(/^\s*\/graphenko_image(?:@\w+)?\s+(\S+)\s*$/i);
     if (!m) continue;
     const url = m[1];
