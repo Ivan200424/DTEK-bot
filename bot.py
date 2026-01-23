@@ -346,16 +346,27 @@ def build_delete_confirmation_keyboard() -> InlineKeyboardMarkup:
 
 def is_valid_ip_or_hostname(value: str) -> bool:
     """Validate IP address or hostname/DDNS"""
-    # IPv4 pattern
-    ipv4_pattern = r'^(\d{1,3}\.){3}\d{1,3}$'
-    # Hostname pattern (simplified)
+    # IPv4 pattern - must have exactly 4 octets
+    ipv4_pattern = r'^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$'
+    # Hostname pattern - basic DNS validation (alphanumeric, hyphens, dots)
     hostname_pattern = r'^[a-zA-Z0-9]([a-zA-Z0-9\-]{0,61}[a-zA-Z0-9])?(\.[a-zA-Z0-9]([a-zA-Z0-9\-]{0,61}[a-zA-Z0-9])?)*$'
     
-    if re.match(ipv4_pattern, value):
-        # Validate each octet
-        octets = value.split('.')
-        return all(0 <= int(octet) <= 255 for octet in octets)
+    # Try IPv4 first
+    ipv4_match = re.match(ipv4_pattern, value)
+    if ipv4_match:
+        # Validate each octet is within valid range
+        try:
+            octets = [int(g) for g in ipv4_match.groups()]
+            return all(0 <= octet <= 255 for octet in octets)
+        except (ValueError, AttributeError):
+            return False
     
+    # Check if it looks like a malformed IP (has 3 dots, likely intended as IP)
+    if value.count('.') == 3:
+        # If it has 3 dots but didn't match IPv4 pattern, it's invalid
+        return False
+    
+    # Validate hostname format
     return bool(re.match(hostname_pattern, value))
 
 
@@ -1406,7 +1417,7 @@ class MonitorThread(threading.Thread):
                     new_status = 'online' if is_online else 'offline'
                     
                     current_time = get_kyiv_time()
-                    logger.debug(f'[ {chat_id}: {host}:{port} -> {new_status}')
+                    logger.debug(f'[{current_time}] Monitor {chat_id}: {host}:{port} -> {new_status}')
                     
                     # Detect state change
                     previous_status = settings.get('monitor_last_status')
