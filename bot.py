@@ -556,7 +556,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # If this is a channel, save the channel_chat_id
     if chat.type == 'channel':
         update_chat_config(chat_id, {
-            'channel_chat_id': chat.id,
+            'channel_chat_id': str(chat.id),
             'channel_title': chat.title or '',
             'channel_description': chat.description or ''
         })
@@ -592,7 +592,7 @@ async def handle_my_chat_member(update: Update, context: ContextTypes.DEFAULT_TY
         # Initialize config and save channel_chat_id
         config = get_chat_config(chat_id)
         update_chat_config(chat_id, {
-            'channel_chat_id': chat.id,
+            'channel_chat_id': str(chat.id),
             'channel_title': chat.title or '',
             'channel_description': chat.description or ''
         })
