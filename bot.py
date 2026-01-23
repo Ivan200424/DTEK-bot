@@ -24,7 +24,7 @@ except ImportError:
 
 try:
     from telegram import Update, ReplyKeyboardMarkup, InlineKeyboardMarkup, InlineKeyboardButton, InputMediaPhoto
-    from telegram.ext import Application, CommandHandler, MessageHandler, CallbackQueryHandler, ContextTypes, filters
+    from telegram.ext import Application, CommandHandler, MessageHandler, CallbackQueryHandler, ChatMemberHandler, ContextTypes, filters
     from telegram.constants import ParseMode
     from telegram.error import TelegramError
 except ImportError:
@@ -32,7 +32,7 @@ except ImportError:
     sys.exit(1)
 
 # Bot version
-BOT_VERSION = '1.2.0'
+BOT_VERSION = '1.2.1'
 
 # Configuration from environment variables
 BOT_TOKEN = os.getenv('BOT_TOKEN')
@@ -119,6 +119,7 @@ MAIN_MENU_KEYBOARD_BASE = [
     ['🌐 IP / Запасний IP', '🗺 Регіон і Група'],
     ['🔔 Сповіщення', '⏱ Інтервали'],
     ['✏️ Заголовок / Опис каналу'],
+    ['➕ Додати канал'],
     ['⚒️ Техпідтримка', '🗑️ Видалити бота'],
     ['❓ Допомога']
 ]
@@ -207,6 +208,7 @@ def get_chat_config(chat_id: str) -> Dict:
             'graphs_paused': False,
             'channel_title': '',
             'channel_description': '',
+            'channel_chat_id': None,
             'light_check_interval': DEFAULT_INTERVAL,
             'graph_check_interval': GRAPHENKO_UPDATE_INTERVAL
         }
@@ -546,9 +548,18 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handle /start command"""
     chat_id = str(update.effective_chat.id)
     user = update.effective_user
+    chat = update.effective_chat
     
     # Initialize config if needed
     config = get_chat_config(chat_id)
+    
+    # If this is a channel, save the channel_chat_id
+    if chat.type == 'channel':
+        update_chat_config(chat_id, {
+            'channel_chat_id': chat.id,
+            'channel_title': chat.title or '',
+            'channel_description': chat.description or ''
+        })
     
     # Update user info
     update_chat_config(chat_id, {
@@ -567,6 +578,25 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
     
     await update.message.reply_text(welcome_text, reply_markup=keyboard, parse_mode=ParseMode.MARKDOWN)
+
+
+async def handle_my_chat_member(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle when bot is added or removed from a chat (especially channels)"""
+    chat = update.effective_chat
+    new_status = update.my_chat_member.new_chat_member.status
+    old_status = update.my_chat_member.old_chat_member.status
+    
+    # Check if bot was added as admin to a channel
+    if chat.type == 'channel' and new_status in ['administrator', 'member'] and old_status in ['left', 'kicked']:
+        chat_id = str(chat.id)
+        # Initialize config and save channel_chat_id
+        config = get_chat_config(chat_id)
+        update_chat_config(chat_id, {
+            'channel_chat_id': chat.id,
+            'channel_title': chat.title or '',
+            'channel_description': chat.description or ''
+        })
+        print(f'Bot added to channel {chat.title} (ID: {chat.id}). Chat ID saved to config.')
 
 
 async def handle_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1206,11 +1236,27 @@ async def handle_text_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 )
         elif text == '✏️ Заголовок / Опис каналу':
             # Start title/description flow
+            # Check if running in a channel
+            if update.effective_chat.type == 'channel':
+                await update.message.reply_text(
+                    '✏️ Налаштування заголовку та опису каналу\n\n'
+                    'Введіть новий заголовок каналу:'
+                )
+                context.user_data['awaiting'] = 'title'
+            else:
+                await update.message.reply_text(
+                    '❌ Цю функцію можна використовувати тільки в каналі!\n\n'
+                    'Будь ласка, запустіть цю команду в каналі, де бот є адміністратором.'
+                )
+        elif text == '➕ Додати канал':
+            # Show instructions for adding bot to a channel
             await update.message.reply_text(
-                '✏️ Налаштування заголовку та опису каналу\n\n'
-                'Введіть новий заголовок каналу:'
+                '➕ Інструкція з підключення бота до каналу\n\n'
+                '1️⃣ Додайте бота до свого каналу як адміністратора з правом змінювати інформацію каналу\n\n'
+                '2️⃣ Надішліть /start в каналі (або натисніть цю кнопку в каналі), щоб бот зберіг chat_id каналу\n\n'
+                '3️⃣ Використовуйте кнопки меню для налаштування моніторингу та графіків відключень\n\n'
+                '💡 Після цього ви зможете керувати заголовком та описом каналу через бота!'
             )
-            context.user_data['awaiting'] = 'title'
         elif text == '⚒️ Техпідтримка':
             await update.message.reply_text(
                 '⚒️ Техпідтримка\n\n'
@@ -1253,8 +1299,11 @@ async def handle_text_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif awaiting == 'title':
         update_chat_config(chat_id, {'channel_title': text.strip()})
         # Try to update channel title via Telegram API
+        # Use channel_chat_id if available, otherwise use current chat_id
+        config = get_chat_config(chat_id)
+        target_chat_id = config.get('channel_chat_id') or chat_id
         try:
-            await context.bot.set_chat_title(chat_id=chat_id, title=text.strip())
+            await context.bot.set_chat_title(chat_id=target_chat_id, title=text.strip())
             await update.message.reply_text(f'✅ Заголовок каналу змінено\n\nТепер введіть новий опис каналу:')
         except Exception as e:
             await update.message.reply_text(f'✅ Заголовок збережено, але не вдалося змінити в Telegram: {e}\n\nТепер введіть новий опис каналу:')
@@ -1263,8 +1312,11 @@ async def handle_text_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif awaiting == 'description':
         update_chat_config(chat_id, {'channel_description': text.strip()})
         # Try to update channel description via Telegram API
+        # Use channel_chat_id if available, otherwise use current chat_id
+        config = get_chat_config(chat_id)
+        target_chat_id = config.get('channel_chat_id') or chat_id
         try:
-            await context.bot.set_chat_description(chat_id=chat_id, description=text.strip())
+            await context.bot.set_chat_description(chat_id=target_chat_id, description=text.strip())
             await update.message.reply_text(f'✅ Опис каналу змінено')
         except Exception as e:
             await update.message.reply_text(f'✅ Опис збережено, але не вдалося змінити в Telegram: {e}')
@@ -1555,6 +1607,7 @@ def main():
     
     # Add handlers
     application.add_handler(CommandHandler('start', start))
+    application.add_handler(ChatMemberHandler(handle_my_chat_member, ChatMemberHandler.MY_CHAT_MEMBER))
     application.add_handler(CallbackQueryHandler(handle_settings_callback, pattern='^settings_'))
     application.add_handler(CallbackQueryHandler(handle_format_callback, pattern='^format_'))
     application.add_handler(CallbackQueryHandler(handle_notification_callback, pattern='^notif_'))
