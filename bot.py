@@ -10,6 +10,7 @@ import json
 import logging
 import os
 import re
+import shutil
 import socket
 import sys
 import threading
@@ -41,13 +42,17 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # Bot version
-BOT_VERSION = '2.0.0'
+BOT_VERSION = '2.1.0'
 
 # Configuration from environment variables
 BOT_TOKEN = os.getenv('BOT_TOKEN')
 DEFAULT_CHAT_ID = os.getenv('CHAT_ID', '-1003523279109')
 CONFIG_FILE = 'graphenko-chats.json'
 ADMIN_USER_ID = int(os.getenv('ADMIN_USER_ID', '1026177113'))
+
+# Backup settings
+BACKUP_DIR = 'backups'
+MAX_BACKUPS = 10  # Keep only the last 10 backups
 
 # Support contacts (configure via environment variables)
 SUPPORT_USERNAME = os.getenv('SUPPORT_USERNAME', '@Ivan200424')
@@ -78,6 +83,16 @@ MILLISECONDS_PER_SECOND = 1000
 SECONDS_PER_MINUTE = 60
 MINUTES_PER_HOUR = 60
 HOURS_PER_DAY = 24
+
+# Debounce settings (from environment or defaults)
+DEBOUNCE_SECONDS = int(os.getenv('DEBOUNCE_SECONDS', '300'))  # 5 minutes default
+
+# Rate limiting settings
+RATE_LIMIT_COMMANDS = int(os.getenv('RATE_LIMIT_COMMANDS', '10'))  # Maximum commands
+RATE_LIMIT_WINDOW = int(os.getenv('RATE_LIMIT_WINDOW', '60'))    # Per 60 seconds
+
+# Healthcheck settings
+HEALTHCHECK_PORT = int(os.getenv('HEALTHCHECK_PORT', '8080'))
 
 if not BOT_TOKEN:
     print('ERROR: BOT_TOKEN environment variable is required')
@@ -125,6 +140,9 @@ PHRASES_POWER_GONE_VARIATIONS = [
     "Інтервал зі світлом:"
 ]
 
+# Button text constants
+CANCEL_BUTTON_TEXT = '❌ Скасувати'
+
 # Menu keyboards - base keyboards without dynamic buttons
 MAIN_MENU_KEYBOARD_BASE = [
     ['📊 Статус', '💡 Моніторинг'],
@@ -155,6 +173,11 @@ HELP_MENU_KEYBOARD = [
 
 # Thread-safe configuration lock
 _config_lock = threading.Lock()
+
+# Rate limiting
+from collections import defaultdict
+_user_command_times: Dict[int, List[float]] = defaultdict(list)
+_rate_limit_lock = threading.Lock()
 
 
 # Keep backward compatibility
@@ -188,10 +211,53 @@ def load_config() -> Dict[str, Dict]:
             return {}
 
 
+def create_backup():
+    """Create a backup of the config file"""
+    if not os.path.exists(CONFIG_FILE):
+        return
+    
+    # Create backup directory if not exists
+    os.makedirs(BACKUP_DIR, exist_ok=True)
+    
+    # Generate backup filename with timestamp
+    timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+    backup_file = os.path.join(BACKUP_DIR, f'config_backup_{timestamp}.json')
+    
+    try:
+        shutil.copy2(CONFIG_FILE, backup_file)
+        logger.info(f'Backup created: {backup_file}')
+        
+        # Clean old backups (keep only MAX_BACKUPS)
+        cleanup_old_backups()
+    except Exception as e:
+        logger.error(f'Failed to create backup: {e}')
+
+
+def cleanup_old_backups():
+    """Remove old backups, keep only MAX_BACKUPS most recent"""
+    if not os.path.exists(BACKUP_DIR):
+        return
+    
+    backups = sorted([
+        os.path.join(BACKUP_DIR, f) for f in os.listdir(BACKUP_DIR)
+        if f.startswith('config_backup_') and f.endswith('.json')
+    ], key=os.path.getmtime, reverse=True)
+    
+    for old_backup in backups[MAX_BACKUPS:]:
+        try:
+            os.remove(old_backup)
+            logger.info(f'Removed old backup: {old_backup}')
+        except Exception as e:
+            logger.error(f'Failed to remove old backup {old_backup}: {e}')
+
+
 def save_config(config: Dict[str, Dict]) -> bool:
-    """Save configuration to JSON file (thread-safe)"""
+    """Save configuration to JSON file (thread-safe with backup)"""
     with _config_lock:
         try:
+            # Create backup before saving
+            create_backup()
+            
             # Convert to array format matching the original schema
             data = []
             for chat_id in sorted(config.keys()):
@@ -607,6 +673,40 @@ def format_schedule_text(region: str, group: str) -> str:
     return text
 
 
+def check_rate_limit(user_id: int) -> bool:
+    """Check if user is within rate limit. Returns True if allowed."""
+    with _rate_limit_lock:
+        current_time = time.time()
+        
+        # Clean old entries
+        _user_command_times[user_id] = [
+            t for t in _user_command_times[user_id]
+            if current_time - t < RATE_LIMIT_WINDOW
+        ]
+        
+        # Check limit
+        if len(_user_command_times[user_id]) >= RATE_LIMIT_COMMANDS:
+            return False
+        
+        # Record this command
+        _user_command_times[user_id].append(current_time)
+        return True
+
+
+async def rate_limit_middleware(update: Update, context: ContextTypes.DEFAULT_TYPE) -> bool:
+    """Check rate limit before processing. Returns True if blocked."""
+    user = update.effective_user
+    if not user:
+        return False
+    
+    if not check_rate_limit(user.id):
+        await update.message.reply_text(
+            '⚠️ Занадто багато запитів! Будь ласка, зачекайте хвилину.'
+        )
+        return True
+    return False
+
+
 def check_tcp_connection(host: str, port: int, timeout: int = 5) -> bool:
     """Check if TCP connection to host:port succeeds"""
     try:
@@ -617,6 +717,17 @@ def check_tcp_connection(host: str, port: int, timeout: int = 5) -> bool:
     except Exception as e:
         logger.error(f'TCP check failed for {host}:{port}: {e}')
         return False
+
+
+def check_tcp_connection_with_retry(host: str, port: int, retries: int = 3, delay: float = 2.0, timeout: int = 5) -> bool:
+    """Check TCP connection with retry logic to avoid false positives"""
+    for attempt in range(retries):
+        if check_tcp_connection(host, port, timeout):
+            return True
+        if attempt < retries - 1:
+            logger.debug(f'TCP check attempt {attempt + 1} failed for {host}:{port}, retrying in {delay}s...')
+            time.sleep(delay)
+    return False
 
 
 # ============================================================================
@@ -658,6 +769,20 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
     
     await update.message.reply_text(welcome_text, reply_markup=keyboard, parse_mode=ParseMode.MARKDOWN)
+
+
+async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle /cancel command - exit from any awaiting state"""
+    if context.user_data.get('awaiting'):
+        context.user_data['awaiting'] = None
+        chat_id = str(update.effective_chat.id)
+        keyboard = ReplyKeyboardMarkup(build_settings_keyboard(chat_id), resize_keyboard=True)
+        await update.message.reply_text(
+            '❌ Операцію скасовано. Повертаємось до головного меню.',
+            reply_markup=keyboard
+        )
+    else:
+        await update.message.reply_text('ℹ️ Немає активної операції для скасування.')
 
 
 async def handle_my_chat_member(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1161,8 +1286,17 @@ async def handle_delete_callback(update: Update, context: ContextTypes.DEFAULT_T
 
 async def handle_text_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handle text input for settings"""
+    # Rate limit check
+    if await rate_limit_middleware(update, context):
+        return
+    
     chat_id = str(update.effective_chat.id)
     text = update.message.text
+    
+    # Check for cancel button first
+    if text == CANCEL_BUTTON_TEXT:
+        await cancel(update, context)
+        return
     
     awaiting = context.user_data.get('awaiting')
     if not awaiting:
@@ -1412,8 +1546,8 @@ class MonitorThread(threading.Thread):
                     port = settings.get('monitor_port', DEFAULT_PORT)
                     interval = settings.get('light_check_interval', DEFAULT_INTERVAL)
                     
-                    # Check status
-                    is_online = check_tcp_connection(host, port)
+                    # Check status with retry logic
+                    is_online = check_tcp_connection_with_retry(host, port)
                     new_status = 'online' if is_online else 'offline'
                     
                     current_time = get_kyiv_time()
@@ -1426,6 +1560,20 @@ class MonitorThread(threading.Thread):
                     if previous_status and previous_status != new_status:
                         # Status changed!
                         logger.info(f'Status changed for {chat_id}: {previous_status} -> {new_status}')
+                        
+                        # Check debounce settings
+                        debounce_enabled = settings.get('debounce_enabled', True)
+                        debounce_seconds = settings.get('debounce_seconds', DEBOUNCE_SECONDS)
+                        time_since_last_change = (int(time.time() * MILLISECONDS_PER_SECOND) - last_change) / MILLISECONDS_PER_SECOND
+                        
+                        if debounce_enabled and time_since_last_change < debounce_seconds:
+                            logger.info(f'Debounce: skipping notification for {chat_id}, last change was {time_since_last_change:.0f}s ago')
+                            # Update status without notification
+                            settings['monitor_last_status'] = new_status
+                            settings['monitor_last_change'] = int(time.time() * MILLISECONDS_PER_SECOND)
+                            config[chat_id] = settings
+                            save_config(config)
+                            continue
                         
                         # Send notification using the application's event loop
                         try:
@@ -1603,6 +1751,58 @@ class GraphenkoThread(threading.Thread):
 
 
 # ============================================================================
+# HealthCheck HTTP Server
+# ============================================================================
+
+from http.server import HTTPServer, BaseHTTPRequestHandler
+
+
+class HealthCheckHandler(BaseHTTPRequestHandler):
+    """Simple HTTP handler for health checks"""
+    
+    def do_GET(self):
+        if self.path == '/health' or self.path == '/':
+            self.send_response(200)
+            self.send_header('Content-type', 'application/json')
+            self.end_headers()
+            
+            health_data = {
+                'status': 'ok',
+                'version': BOT_VERSION,
+                'timestamp': datetime.now(timezone.utc).isoformat()
+            }
+            self.wfile.write(json.dumps(health_data).encode())
+        else:
+            self.send_response(404)
+            self.end_headers()
+    
+    def log_message(self, format, *args):
+        # Suppress default logging
+        pass
+
+
+class HealthCheckServer(threading.Thread):
+    """Background thread for health check HTTP server"""
+    
+    def __init__(self, port: int = HEALTHCHECK_PORT):
+        super().__init__(daemon=True)
+        self.port = port
+        self.server = None
+    
+    def run(self):
+        try:
+            self.server = HTTPServer(('0.0.0.0', self.port), HealthCheckHandler)
+            logger.info(f'Health check server started on port {self.port}')
+            self.server.serve_forever()
+        except Exception as e:
+            logger.error(f'Health check server error: {e}')
+    
+    def stop(self):
+        if self.server:
+            self.server.shutdown()
+
+
+# ============================================================================
 # Main
 # ============================================================================
 
@@ -1612,11 +1812,16 @@ def main():
     logger.info(f'Bot token: {BOT_TOKEN[:10]}...')
     logger.info(f'Config file: {CONFIG_FILE}')
     
+    # Start health check server
+    health_server = HealthCheckServer()
+    health_server.start()
+    
     # Create application
     application = Application.builder().token(BOT_TOKEN).build()
     
     # Add handlers
     application.add_handler(CommandHandler('start', start))
+    application.add_handler(CommandHandler('cancel', cancel))
     application.add_handler(ChatMemberHandler(handle_my_chat_member, ChatMemberHandler.MY_CHAT_MEMBER))
     application.add_handler(CallbackQueryHandler(handle_settings_callback, pattern='^settings_'))
     application.add_handler(CallbackQueryHandler(handle_format_callback, pattern='^format_'))
