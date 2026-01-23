@@ -115,7 +115,11 @@ PHRASES_POWER_GONE_VARIATIONS = [
 # Menu keyboards - base keyboards without dynamic buttons
 MAIN_MENU_KEYBOARD_BASE = [
     ['📊 Статус', '💡 Моніторинг'],
-    ['📈 Графіки', '⚙️ Налаштування'],
+    ['📈 Графіки'],
+    ['🌐 IP / Запасний IP', '🗺 Регіон і Група'],
+    ['🔔 Сповіщення', '⏱ Інтервали'],
+    ['✏️ Заголовок / Опис каналу'],
+    ['⚒️ Техпідтримка', '🗑️ Видалити бота'],
     ['❓ Допомога']
 ]
 
@@ -243,7 +247,7 @@ def build_settings_keyboard(chat_id: str) -> list:
     
     # Copy base keyboard and insert pause/resume button
     keyboard = [row[:] for row in MAIN_MENU_KEYBOARD_BASE]  # Deep copy of rows
-    keyboard.insert(2, [pause_resume_text])  # Insert before "❓ Допомога"
+    keyboard.insert(5, [pause_resume_text])  # Insert before "⚒️ Техпідтримка і 🗑️ Видалити бота"
     return keyboard
 
 
@@ -770,7 +774,22 @@ async def handle_region_callback(update: Update, context: ContextTypes.DEFAULT_T
     region_name = REGIONS_MAP.get(region, region)
     
     update_chat_config(chat_id, {'region': region})
-    await query.message.reply_text(f'✅ Регіон змінено на: *{region_name}*', parse_mode=ParseMode.MARKDOWN)
+    
+    # Show group selection inline keyboard for step 2
+    keyboard = InlineKeyboardMarkup([
+        [InlineKeyboardButton('1.1', callback_data='group_1.1'), InlineKeyboardButton('1.2', callback_data='group_1.2')],
+        [InlineKeyboardButton('2.1', callback_data='group_2.1'), InlineKeyboardButton('2.2', callback_data='group_2.2')],
+        [InlineKeyboardButton('3.1', callback_data='group_3.1'), InlineKeyboardButton('3.2', callback_data='group_3.2')],
+        [InlineKeyboardButton('4.1', callback_data='group_4.1'), InlineKeyboardButton('4.2', callback_data='group_4.2')],
+        [InlineKeyboardButton('5.1', callback_data='group_5.1'), InlineKeyboardButton('5.2', callback_data='group_5.2')],
+        [InlineKeyboardButton('6.1', callback_data='group_6.1'), InlineKeyboardButton('6.2', callback_data='group_6.2')]
+    ])
+    await query.message.reply_text(
+        f'✅ Регіон змінено на: *{region_name}*\n\n'
+        'Крок 2 з 3: Оберіть номер групи:',
+        parse_mode=ParseMode.MARKDOWN,
+        reply_markup=keyboard
+    )
 
 
 async def handle_group_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -784,7 +803,19 @@ async def handle_group_callback(update: Update, context: ContextTypes.DEFAULT_TY
     group = query.data.replace('group_', '')
     
     update_chat_config(chat_id, {'group': group})
-    await query.message.reply_text(f'✅ Групу змінено на: *{group}*', parse_mode=ParseMode.MARKDOWN)
+    
+    # Show format selection inline keyboard for step 3
+    keyboard = InlineKeyboardMarkup([
+        [InlineKeyboardButton('🖼 Зображення', callback_data='format_image')],
+        [InlineKeyboardButton('📝 Текст', callback_data='format_text')],
+        [InlineKeyboardButton('🖼📝 Обидва', callback_data='format_both')]
+    ])
+    await query.message.reply_text(
+        f'✅ Групу змінено на: *{group}*\n\n'
+        'Крок 3 з 3: Оберіть формат графіків:',
+        parse_mode=ParseMode.MARKDOWN,
+        reply_markup=keyboard
+    )
 
 
 async def handle_graphs_now_old(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -855,67 +886,33 @@ async def handle_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def handle_settings_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handle Settings menu"""
-    user_id = update.effective_user.id if update.effective_user else 0
-    is_admin = user_id == ADMIN_USER_ID
-    
+    """Handle Settings menu - now redirects to main menu with all settings buttons"""
     chat_id = str(update.effective_chat.id)
     
-    # Build inline keyboard for detailed settings
-    keyboard = [
-        [
-            InlineKeyboardButton('🌐 Змінити IP', callback_data='settings_ip'),
-            InlineKeyboardButton('🌐 Запасна IP', callback_data='settings_fallback_ip')
-        ],
-        [
-            InlineKeyboardButton('📊 Формат графіків', callback_data='settings_format'),
-            InlineKeyboardButton('🗺 Змінити регіон', callback_data='settings_region')
-        ],
-        [
-            InlineKeyboardButton('🔢 Змінити групу', callback_data='settings_group'),
-            InlineKeyboardButton('🔕 Сповіщення', callback_data='settings_notifications')
-        ],
-        [
-            InlineKeyboardButton('✏️ Заголовок', callback_data='settings_title'),
-            InlineKeyboardButton('📝 Опис каналу', callback_data='settings_description')
-        ],
-        [InlineKeyboardButton('⚒️ Техпідтримка', callback_data='settings_support')],
-        [InlineKeyboardButton('🗑️ Видалити бота з каналу', callback_data='settings_delete')]
-    ]
-    
-    if is_admin:
-        keyboard.append([
-            InlineKeyboardButton('⏱ Інтервал світла', callback_data='settings_light_interval'),
-            InlineKeyboardButton('⏱ Інтервал графік', callback_data='settings_graph_interval')
-        ])
-    
-    inline_markup = InlineKeyboardMarkup(keyboard)
-    
-    # Build reply keyboard with dynamic pause/resume button
+    # Build reply keyboard with dynamic pause/resume button and all settings
     reply_keyboard = ReplyKeyboardMarkup(build_settings_keyboard(chat_id), resize_keyboard=True)
     
     # Get pause status for the message
     pause_status = '⏸️ Призупинено' if is_channel_paused(chat_id) else '▶️ Активний'
-    pause_button_text = get_pause_resume_button_text(chat_id)
     
-    # Combined message with status and instructions
+    # Message explaining the new interface
     settings_text = f'''⚙️ Налаштування бота
 
 Статус каналу: {pause_status}
 
-Використовуйте кнопку {pause_button_text} для керування роботою каналу.
+Використовуйте кнопки нижче для керування налаштуваннями:
 
-Детальні налаштування доступні нижче:'''
+🌐 IP / Запасний IP - змінити IP-адреси моніторингу
+🗺 Регіон і Група - налаштувати регіон, групу та формат графіків
+🔔 Сповіщення - увімкнути/вимкнути сповіщення
+⏱ Інтервали - налаштувати інтервали перевірки
+✏️ Заголовок / Опис каналу - змінити назву та опис
+⚒️ Техпідтримка - контакти підтримки
+🗑️ Видалити бота - видалити всі налаштування'''
     
     await update.message.reply_text(
         settings_text,
         reply_markup=reply_keyboard
-    )
-    
-    # Send inline keyboard for detailed settings
-    await update.message.reply_text(
-        'Оберіть параметр для зміни:',
-        reply_markup=inline_markup
     )
 
 
@@ -1046,10 +1043,22 @@ async def handle_format_callback(update: Update, context: ContextTypes.DEFAULT_T
         'format_both': 'both'
     }
     
+    format_display = {
+        'format_image': '🖼 Зображення',
+        'format_text': '📝 Текст',
+        'format_both': '🖼📝 Обидва'
+    }
+    
     new_format = format_map.get(query.data)
     if new_format:
         update_chat_config(chat_id, {'format_preference': new_format})
-        await query.message.reply_text(f'✅ Формат змінено на: {new_format}')
+        # Refresh keyboard after changes
+        keyboard = ReplyKeyboardMarkup(build_settings_keyboard(chat_id), resize_keyboard=True)
+        await query.message.reply_text(
+            f'✅ Формат змінено на: {format_display.get(query.data, new_format)}\n\n'
+            'Налаштування регіону, групи та формату збережено.',
+            reply_markup=keyboard
+        )
 
 
 async def handle_notification_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1061,10 +1070,14 @@ async def handle_notification_callback(update: Update, context: ContextTypes.DEF
     
     if query.data == 'notif_on':
         update_chat_config(chat_id, {'notifications_enabled': True})
-        await query.message.reply_text('✅ Сповіщення увімкнено')
+        message = '✅ Сповіщення увімкнено'
     elif query.data == 'notif_off':
         update_chat_config(chat_id, {'notifications_enabled': False})
-        await query.message.reply_text('❌ Сповіщення вимкнено')
+        message = '❌ Сповіщення вимкнено'
+    
+    # Refresh keyboard after changes
+    keyboard = ReplyKeyboardMarkup(build_settings_keyboard(chat_id), resize_keyboard=True)
+    await query.message.reply_text(message, reply_markup=keyboard)
 
 
 
@@ -1082,12 +1095,17 @@ async def handle_delete_callback(update: Update, context: ContextTypes.DEFAULT_T
             del config[chat_id]
             save_config(config)
         
+        # Refresh keyboard after deletion
+        keyboard = ReplyKeyboardMarkup(build_settings_keyboard(chat_id), resize_keyboard=True)
         await query.message.reply_text(
             '✅ Бот видалено з каналу. Всі налаштування скинуто.\n\n'
-            'Для повторного використання введіть /start'
+            'Для повторного використання введіть /start',
+            reply_markup=keyboard
         )
     elif query.data == 'delete_cancel':
-        await query.message.reply_text('❌ Скасовано')
+        # Refresh keyboard after cancellation
+        keyboard = ReplyKeyboardMarkup(build_settings_keyboard(chat_id), resize_keyboard=True)
+        await query.message.reply_text('❌ Скасовано', reply_markup=keyboard)
 
 
 async def handle_text_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1131,15 +1149,101 @@ async def handle_text_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await toggle_channel_pause(update, chat_id, pause=True)
         elif text == '✅ Відновити роботу каналу':
             await toggle_channel_pause(update, chat_id, pause=False)
+        elif text == '🌐 IP / Запасний IP':
+            # Start IP configuration flow
+            await update.message.reply_text(
+                '🌐 Налаштування IP-адрес\n\n'
+                'Введіть основну IP-адресу або DDNS:\n\n'
+                'Приклад: 93.127.118.86 або myhost.ddns.net'
+            )
+            context.user_data['awaiting'] = 'ip'
+        elif text == '🗺 Регіон і Група':
+            # Start region/group/format configuration flow
+            keyboard = InlineKeyboardMarkup([
+                [InlineKeyboardButton('🏛 Київська область', callback_data='region_kyiv-region')],
+                [InlineKeyboardButton('🏙 м. Київ', callback_data='region_kyiv')],
+                [InlineKeyboardButton('🏭 Дніпро', callback_data='region_dnipro')],
+                [InlineKeyboardButton('🌊 Одеса', callback_data='region_odesa')]
+            ])
+            await update.message.reply_text(
+                '🗺 Налаштування регіону, групи та формату графіків\n\n'
+                'Крок 1 з 3: Оберіть регіон:',
+                reply_markup=keyboard
+            )
+        elif text == '🔔 Сповіщення':
+            config = get_chat_config(chat_id)
+            current = config.get('notifications_enabled', True)
+            keyboard = InlineKeyboardMarkup([
+                [InlineKeyboardButton('✅ Увімкнути', callback_data='notif_on')],
+                [InlineKeyboardButton('❌ Вимкнути', callback_data='notif_off')]
+            ])
+            await update.message.reply_text(
+                f'🔔 Сповіщення зараз: {"✅ Увімкнено" if current else "❌ Вимкнено"}\n\n'
+                'Оберіть стан:',
+                reply_markup=keyboard
+            )
+        elif text == '⏱ Інтервали':
+            user_id = update.effective_user.id if update.effective_user else 0
+            is_admin = user_id == ADMIN_USER_ID
+            
+            if not is_admin:
+                await update.message.reply_text('❌ Доступ заборонено. Тільки для адміністраторів.')
+            else:
+                config = get_chat_config(chat_id)
+                light_interval = config.get('light_check_interval', DEFAULT_INTERVAL)
+                graph_interval = config.get('graph_check_interval', GRAPHENKO_UPDATE_INTERVAL)
+                
+                keyboard = InlineKeyboardMarkup([
+                    [InlineKeyboardButton('⏱ Інтервал світла', callback_data='settings_light_interval')],
+                    [InlineKeyboardButton('⏱ Інтервал графік', callback_data='settings_graph_interval')]
+                ])
+                await update.message.reply_text(
+                    f'⏱ Поточні інтервали:\n\n'
+                    f'Світло: {light_interval}с\n'
+                    f'Графіки: {graph_interval}с\n\n'
+                    'Оберіть інтервал для зміни:',
+                    reply_markup=keyboard
+                )
+        elif text == '✏️ Заголовок / Опис каналу':
+            # Start title/description flow
+            await update.message.reply_text(
+                '✏️ Налаштування заголовку та опису каналу\n\n'
+                'Введіть новий заголовок каналу:'
+            )
+            context.user_data['awaiting'] = 'title'
+        elif text == '⚒️ Техпідтримка':
+            await update.message.reply_text(
+                '⚒️ Техпідтримка\n\n'
+                'З питаннями звертайтесь: @support_username\n'
+                'Email: support@example.com'
+            )
+        elif text == '🗑️ Видалити бота':
+            keyboard = InlineKeyboardMarkup([
+                [InlineKeyboardButton('✅ Так, видалити', callback_data='delete_confirm')],
+                [InlineKeyboardButton('❌ Ні, скасувати', callback_data='delete_cancel')]
+            ])
+            await update.message.reply_text(
+                '⚠️ Ви впевнені, що хочете видалити бота з каналу?\n\n'
+                'Всі налаштування будуть втрачені!',
+                reply_markup=keyboard
+            )
         return
     
     # Process input based on what we're awaiting
     if awaiting == 'ip':
         update_chat_config(chat_id, {'monitor_host': text.strip()})
-        await update.message.reply_text(f'✅ IP-адресу змінено на: {text.strip()}')
+        await update.message.reply_text(f'✅ IP-адресу змінено на: {text.strip()}\n\nТепер введіть запасну IP-адресу або DDNS (або напишіть "skip" щоб пропустити):')
+        context.user_data['awaiting'] = 'fallback_ip'
+        return
     elif awaiting == 'fallback_ip':
-        update_chat_config(chat_id, {'fallback_host': text.strip()})
-        await update.message.reply_text(f'✅ Запасну IP-адресу змінено на: {text.strip()}')
+        if text.strip().lower() != 'skip':
+            update_chat_config(chat_id, {'fallback_host': text.strip()})
+            await update.message.reply_text(f'✅ Запасну IP-адресу змінено на: {text.strip()}')
+        else:
+            await update.message.reply_text('✅ Запасну IP-адресу пропущено')
+        # Refresh keyboard after changes
+        keyboard = ReplyKeyboardMarkup(build_settings_keyboard(chat_id), resize_keyboard=True)
+        await update.message.reply_text('Налаштування збережено.', reply_markup=keyboard)
     elif awaiting == 'region':
         update_chat_config(chat_id, {'region': text.strip().lower()})
         await update.message.reply_text(f'✅ Регіон змінено на: {text.strip()}')
@@ -1151,9 +1255,11 @@ async def handle_text_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
         # Try to update channel title via Telegram API
         try:
             await context.bot.set_chat_title(chat_id=chat_id, title=text.strip())
-            await update.message.reply_text(f'✅ Заголовок каналу змінено')
+            await update.message.reply_text(f'✅ Заголовок каналу змінено\n\nТепер введіть новий опис каналу:')
         except Exception as e:
-            await update.message.reply_text(f'✅ Заголовок збережено, але не вдалося змінити в Telegram: {e}')
+            await update.message.reply_text(f'✅ Заголовок збережено, але не вдалося змінити в Telegram: {e}\n\nТепер введіть новий опис каналу:')
+        context.user_data['awaiting'] = 'description'
+        return
     elif awaiting == 'description':
         update_chat_config(chat_id, {'channel_description': text.strip()})
         # Try to update channel description via Telegram API
@@ -1162,6 +1268,9 @@ async def handle_text_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text(f'✅ Опис каналу змінено')
         except Exception as e:
             await update.message.reply_text(f'✅ Опис збережено, але не вдалося змінити в Telegram: {e}')
+        # Refresh keyboard after changes
+        keyboard = ReplyKeyboardMarkup(build_settings_keyboard(chat_id), resize_keyboard=True)
+        await update.message.reply_text('Налаштування збережено.', reply_markup=keyboard)
     elif awaiting == 'light_interval':
         try:
             interval = int(text.strip())
