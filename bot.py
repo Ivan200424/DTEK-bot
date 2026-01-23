@@ -25,7 +25,7 @@ except ImportError:
 try:
     from telegram import Update, ReplyKeyboardMarkup, InlineKeyboardMarkup, InlineKeyboardButton, InputMediaPhoto
     from telegram.ext import Application, CommandHandler, MessageHandler, CallbackQueryHandler, ChatMemberHandler, ContextTypes, filters
-    from telegram.constants import ParseMode
+    from telegram.constants import ParseMode, ChatMemberStatus
     from telegram.error import TelegramError
 except ImportError:
     print('ERROR: python-telegram-bot library not found. Install with: pip install python-telegram-bot>=20.0,<21.0')
@@ -583,12 +583,13 @@ async def handle_my_chat_member(update: Update, context: ContextTypes.DEFAULT_TY
         old_status = my_chat_member.old_chat_member.status
         
         # Check if bot was added to a channel as administrator
-        if chat.type == 'channel' and new_status in ['administrator', 'member'] and old_status in ['left', 'kicked']:
+        if (chat.type == 'channel' and 
+            new_status in [ChatMemberStatus.ADMINISTRATOR, ChatMemberStatus.MEMBER] and 
+            old_status in [ChatMemberStatus.LEFT, ChatMemberStatus.BANNED]):
             chat_id = str(chat.id)
             print(f'Bot added to channel: {chat.title} (ID: {chat_id})')
             
             # Initialize or update config for this channel
-            config = get_chat_config(chat_id)
             update_chat_config(chat_id, {
                 'channel_title': chat.title or '',
                 'channel_description': chat.description or '',
@@ -606,7 +607,9 @@ async def handle_my_chat_member(update: Update, context: ContextTypes.DEFAULT_TY
             except Exception as e:
                 print(f'Could not send confirmation to channel {chat_id}: {e}')
                 
-        elif chat.type == 'channel' and new_status in ['left', 'kicked'] and old_status in ['administrator', 'member']:
+        elif (chat.type == 'channel' and 
+              new_status in [ChatMemberStatus.LEFT, ChatMemberStatus.BANNED] and 
+              old_status in [ChatMemberStatus.ADMINISTRATOR, ChatMemberStatus.MEMBER]):
             chat_id = str(chat.id)
             print(f'Bot removed from channel: {chat.title} (ID: {chat_id})')
             
