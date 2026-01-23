@@ -42,7 +42,7 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # Bot version
-BOT_VERSION = '2.1.0'
+BOT_VERSION = '2.2.0'
 
 # Configuration from environment variables
 BOT_TOKEN = os.getenv('BOT_TOKEN')
@@ -86,6 +86,10 @@ HOURS_PER_DAY = 24
 
 # Debounce settings (from environment or defaults)
 DEBOUNCE_SECONDS = int(os.getenv('DEBOUNCE_SECONDS', '300'))  # 5 minutes default
+
+# Night mode settings (from environment or defaults)
+NIGHT_MODE_START = int(os.getenv('NIGHT_MODE_START', '23'))  # 23:00
+NIGHT_MODE_END = int(os.getenv('NIGHT_MODE_END', '7'))       # 07:00
 
 # Rate limiting settings
 RATE_LIMIT_COMMANDS = int(os.getenv('RATE_LIMIT_COMMANDS', '10'))  # Maximum commands
@@ -148,7 +152,8 @@ MAIN_MENU_KEYBOARD_BASE = [
     ['📊 Статус', '💡 Моніторинг'],
     ['📈 Графіки'],
     ['🌐 IP', '🗺 Регіон і Група'],
-    ['🔔 Сповіщення', '⏱ Інтервали'],
+    ['🔔 Сповіщення', '🌙 Нічний режим'],
+    ['⏱ Інтервали'],
     ['✏️ Заголовок / Опис каналу'],
     ['➕ Додати канал'],
     ['⚒️ Техпідтримка', '🗑️ Видалити бота'],
@@ -157,18 +162,18 @@ MAIN_MENU_KEYBOARD_BASE = [
 
 MONITORING_MENU_KEYBOARD = [
     ['▶️ Запустити', '⏸️ Зупинити'],
-    ['📊 Статистика'],
-    ['🔙 Головне меню']
+    ['📊 Статистика', '📜 Історія'],
+    ['🔙 Назад']
 ]
 
 GRAPHS_MENU_KEYBOARD = [
     ['📥 Отримати зараз', '⚙️ Налаштування'],
     ['📅 Мій графік'],
-    ['🔙 Головне меню']
+    ['🔙 Назад']
 ]
 
 HELP_MENU_KEYBOARD = [
-    ['🔙 Головне меню']
+    ['🔙 Назад']
 ]
 
 # Thread-safe configuration lock
@@ -292,7 +297,11 @@ def get_chat_config(chat_id: str) -> Dict:
             'channel_title': '',
             'channel_description': '',
             'light_check_interval': DEFAULT_INTERVAL,
-            'graph_check_interval': GRAPHENKO_UPDATE_INTERVAL
+            'graph_check_interval': GRAPHENKO_UPDATE_INTERVAL,
+            'status_history': [],
+            'night_mode_enabled': False,
+            'night_mode_start': NIGHT_MODE_START,
+            'night_mode_end': NIGHT_MODE_END
         }
         save_config(config)
     return config[chat_id]
@@ -542,6 +551,86 @@ def get_random_phrase(base_phrases: List[str], variation_phrases: List[str]) -> 
         return random.choice(base_phrases)
     else:
         return random.choice(variation_phrases)
+
+
+def add_status_to_history(chat_id: str, status: str, duration_ms: int):
+    """Add status change to history (keep last 100 entries)"""
+    config = load_config()
+    if chat_id not in config:
+        return
+    
+    history = config[chat_id].get('status_history', [])
+    
+    history.append({
+        'timestamp': datetime.now(timezone.utc).isoformat(),
+        'status': status,
+        'duration_ms': duration_ms
+    })
+    
+    # Keep only last 100 entries
+    if len(history) > 100:
+        history = history[-100:]
+    
+    config[chat_id]['status_history'] = history
+    save_config(config)
+
+
+def calculate_uptime_stats(chat_id: str) -> Dict:
+    """Calculate uptime statistics from history"""
+    config = get_chat_config(chat_id)
+    history = config.get('status_history', [])
+    
+    if not history:
+        return {'day': None, 'week': None, 'month': None}
+    
+    now = datetime.now(timezone.utc)
+    day_ago = now - timedelta(days=1)
+    week_ago = now - timedelta(days=7)
+    month_ago = now - timedelta(days=30)
+    
+    def calc_uptime(since: datetime) -> Optional[float]:
+        total_online = 0
+        total_offline = 0
+        
+        for entry in history:
+            ts = datetime.fromisoformat(entry['timestamp'])
+            if ts < since:
+                continue
+            
+            duration = entry['duration_ms'] / MILLISECONDS_PER_SECOND
+            if entry['status'] == 'online':
+                total_online += duration
+            else:
+                total_offline += duration
+        
+        total = total_online + total_offline
+        if total == 0:
+            return None
+        return (total_online / total) * 100
+    
+    return {
+        'day': calc_uptime(day_ago),
+        'week': calc_uptime(week_ago),
+        'month': calc_uptime(month_ago)
+    }
+
+
+def is_night_mode_active(chat_id: str) -> bool:
+    """Check if night mode is currently active"""
+    config = get_chat_config(chat_id)
+    
+    if not config.get('night_mode_enabled', False):
+        return False
+    
+    current_hour = get_kyiv_datetime().hour
+    start = config.get('night_mode_start', NIGHT_MODE_START)
+    end = config.get('night_mode_end', NIGHT_MODE_END)
+    
+    # Handle overnight period (e.g., 23:00 to 07:00)
+    if start > end:
+        return current_hour >= start or current_hour < end
+    else:
+        return start <= current_hour < end
 
 
 def convert_group_to_url_format(group: str) -> str:
@@ -886,6 +975,16 @@ async def handle_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
     author_username = config.get('last_user_username', '[disabled]')
     author_id = config.get('last_user_id', ADMIN_USER_ID)
     
+    # Calculate uptime statistics
+    uptime = calculate_uptime_stats(chat_id)
+    uptime_text = ''
+    if uptime['day'] is not None:
+        uptime_text += f"\n📊 Uptime за день: {uptime['day']:.1f}%"
+    if uptime['week'] is not None:
+        uptime_text += f"\n📊 Uptime за тиждень: {uptime['week']:.1f}%"
+    if uptime['month'] is not None:
+        uptime_text += f"\n📊 Uptime за місяць: {uptime['month']:.1f}%"
+    
     status_message = f'''💡 Статус світла: {status_emoji} {status_text}
 
 📶 Останній успішний зв'язок:
@@ -894,7 +993,7 @@ async def handle_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 🔄 Остання зміна статусу:
     {status_change_text}
-    {status_change_date}
+    {status_change_date}{uptime_text}
 
 🌐 IP-адреса / DDNS:
     {primary_ip}
@@ -1256,6 +1355,45 @@ async def handle_notification_callback(update: Update, context: ContextTypes.DEF
     await query.message.reply_text(message, reply_markup=keyboard)
 
 
+async def handle_night_mode_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle night mode callbacks"""
+    query = update.callback_query
+    await query.answer()
+    
+    chat_id = str(update.effective_chat.id)
+    config = get_chat_config(chat_id)
+    
+    if query.data == 'night_mode_toggle':
+        enabled = config.get('night_mode_enabled', False)
+        update_chat_config(chat_id, {'night_mode_enabled': not enabled})
+        
+        new_status = '✅ Увімкнено' if not enabled else '❌ Вимкнено'
+        start = config.get('night_mode_start', NIGHT_MODE_START)
+        end = config.get('night_mode_end', NIGHT_MODE_END)
+        
+        keyboard = InlineKeyboardMarkup([
+            [InlineKeyboardButton('✅ Увімкнути' if enabled else '❌ Вимкнути', 
+                                  callback_data='night_mode_toggle')],
+            [InlineKeyboardButton('⏰ Змінити час', callback_data='night_mode_time')]
+        ])
+        
+        await query.edit_message_text(
+            f'🌙 *Нічний режим*\n\n'
+            f'Статус: {new_status}\n'
+            f'Час: {start:02d}:00 - {end:02d}:00\n\n'
+            'У цей період сповіщення не надсилатимуться.',
+            parse_mode=ParseMode.MARKDOWN,
+            reply_markup=keyboard
+        )
+    
+    elif query.data == 'night_mode_time':
+        await query.message.reply_text(
+            '⏰ Налаштування часу нічного режиму\n\n'
+            'Введіть початок у форматі HH (0-23):\n'
+            'Приклад: 23'
+        )
+        context.user_data['awaiting'] = 'night_mode_start'
+
 
 async def handle_delete_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handle delete callbacks"""
@@ -1303,24 +1441,34 @@ async def handle_text_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
         # Handle menu buttons
         if text == '📊 Статус':
             await handle_status(update, context)
+            return
         elif text == '💡 Моніторинг':
             await handle_monitoring_menu(update, context)
+            return
         elif text == '📈 Графіки':
             await handle_graphs_menu(update, context)
+            return
         elif text == '⚙️ Налаштування':
             await handle_settings_menu(update, context)
+            return
         elif text == '❓ Допомога':
             await handle_help(update, context)
-        elif text == '🔙 Головне меню':
+            return
+        elif text == '🔙 Назад' or text == '🔙 Головне меню':
             await show_main_menu(update, context)
+            return
         elif text == '▶️ Запустити':
             await handle_monitoring_start(update, context)
+            return
         elif text == '⏸️ Зупинити':
             await handle_monitoring_stop(update, context)
+            return
         elif text == '📊 Статистика':
             await handle_monitoring_stats(update, context)
+            return
         elif text == '📥 Отримати зараз':
             await handle_graphs_now(update, context)
+            return
         elif text == '📅 Мій графік':
             config = get_chat_config(chat_id)
             group = config.get('group', '3.1')
@@ -1330,10 +1478,53 @@ async def handle_text_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 f'📅 Ваш регіон: *{region_name}*\n📅 Ваша група: *{group}*\n\nГрафік оновлюється автоматично.',
                 parse_mode=ParseMode.MARKDOWN
             )
+            return
+        elif text == '📜 Історія':
+            config = get_chat_config(chat_id)
+            history = config.get('status_history', [])
+            
+            if not history:
+                await update.message.reply_text('📜 Історія порожня. Поки що не було зафіксовано змін статусу.')
+                return
+            
+            # Show last 10 entries
+            text_lines = ['📜 *Останні зміни статусу:*\n']
+            for entry in history[-10:]:
+                ts = datetime.fromisoformat(entry['timestamp'])
+                status_emoji = '🟢' if entry['status'] == 'online' else '🔴'
+                duration = format_duration_short(entry['duration_ms'])
+                text_lines.append(f"{status_emoji} {ts.strftime('%d.%m %H:%M')} - {duration}")
+            
+            await update.message.reply_text('\n'.join(text_lines), parse_mode=ParseMode.MARKDOWN)
+            return
+        elif text == '🌙 Нічний режим':
+            config = get_chat_config(chat_id)
+            enabled = config.get('night_mode_enabled', False)
+            start = config.get('night_mode_start', NIGHT_MODE_START)
+            end = config.get('night_mode_end', NIGHT_MODE_END)
+            
+            keyboard = InlineKeyboardMarkup([
+                [InlineKeyboardButton('✅ Увімкнути' if not enabled else '❌ Вимкнути', 
+                                      callback_data='night_mode_toggle')],
+                [InlineKeyboardButton('⏰ Змінити час', callback_data='night_mode_time')]
+            ])
+            
+            status = '✅ Увімкнено' if enabled else '❌ Вимкнено'
+            await update.message.reply_text(
+                f'🌙 *Нічний режим*\n\n'
+                f'Статус: {status}\n'
+                f'Час: {start:02d}:00 - {end:02d}:00\n\n'
+                'У цей період сповіщення не надсилатимуться.',
+                parse_mode=ParseMode.MARKDOWN,
+                reply_markup=keyboard
+            )
+            return
         elif text == '🔴 Тимчасово зупинити канал':
             await toggle_channel_pause(update, chat_id, pause=True)
+            return
         elif text == '✅ Відновити роботу каналу':
             await toggle_channel_pause(update, chat_id, pause=False)
+            return
         elif text == '🌐 IP':
             # Start IP configuration flow
             await update.message.reply_text(
@@ -1342,6 +1533,7 @@ async def handle_text_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 'Приклад: 93.127.118.86 або myhost.ddns.net'
             )
             context.user_data['awaiting'] = 'ip'
+            return
         elif text == '🗺 Регіон і Група':
             # Start region/group/format configuration flow
             keyboard = build_region_keyboard()
@@ -1350,6 +1542,7 @@ async def handle_text_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 'Крок 1 з 3: Оберіть регіон:',
                 reply_markup=keyboard
             )
+            return
         elif text == '🔔 Сповіщення':
             config = get_chat_config(chat_id)
             current = config.get('notifications_enabled', True)
@@ -1359,12 +1552,14 @@ async def handle_text_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 'Оберіть стан:',
                 reply_markup=keyboard
             )
+            return
         elif text == '⏱ Інтервали':
             user_id = update.effective_user.id if update.effective_user else 0
             is_admin = user_id == ADMIN_USER_ID
             
             if not is_admin:
                 await update.message.reply_text('❌ Доступ заборонено. Тільки для адміністраторів.')
+                return
             else:
                 config = get_chat_config(chat_id)
                 light_interval = config.get('light_check_interval', DEFAULT_INTERVAL)
@@ -1381,6 +1576,7 @@ async def handle_text_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     'Оберіть інтервал для зміни:',
                     reply_markup=keyboard
                 )
+                return
         elif text == '✏️ Заголовок / Опис каналу':
             # Start title/description flow
             await update.message.reply_text(
@@ -1388,6 +1584,7 @@ async def handle_text_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 'Введіть новий заголовок каналу:'
             )
             context.user_data['awaiting'] = 'title'
+            return
         elif text == '➕ Додати канал':
             # Show instructions for adding the bot to a channel
             instructions = (
@@ -1407,12 +1604,14 @@ async def handle_text_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 '✅ Після додавання бот буде автоматично оновлювати інформацію в каналі!'
             )
             await update.message.reply_text(instructions, parse_mode=ParseMode.MARKDOWN)
+            return
         elif text == '⚒️ Техпідтримка':
             await update.message.reply_text(
                 '⚒️ Техпідтримка\n\n'
                 f'З питаннями звертайтесь: {SUPPORT_USERNAME}\n'
                 f'Email: {SUPPORT_EMAIL}'
             )
+            return
         elif text == '🗑️ Видалити бота':
             keyboard = build_delete_confirmation_keyboard()
             await update.message.reply_text(
@@ -1420,6 +1619,7 @@ async def handle_text_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 'Всі налаштування будуть втрачені!',
                 reply_markup=keyboard
             )
+            return
         return
     
     # Process input based on what we're awaiting
@@ -1483,6 +1683,34 @@ async def handle_text_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
         except ValueError:
             await update.message.reply_text('❌ Невірне значення. Введіть число.')
             return
+    elif awaiting == 'night_mode_start':
+        try:
+            hour = int(text.strip())
+            if hour < 0 or hour > 23:
+                await update.message.reply_text('❌ Невірне значення. Введіть число від 0 до 23.')
+                return
+            update_chat_config(chat_id, {'night_mode_start': hour})
+            await update.message.reply_text(
+                f'✅ Початок нічного режиму змінено на: {hour:02d}:00\n\n'
+                'Тепер введіть кінець у форматі HH (0-23):\n'
+                'Приклад: 7'
+            )
+            context.user_data['awaiting'] = 'night_mode_end'
+            return
+        except ValueError:
+            await update.message.reply_text('❌ Невірне значення. Введіть число від 0 до 23.')
+            return
+    elif awaiting == 'night_mode_end':
+        try:
+            hour = int(text.strip())
+            if hour < 0 or hour > 23:
+                await update.message.reply_text('❌ Невірне значення. Введіть число від 0 до 23.')
+                return
+            update_chat_config(chat_id, {'night_mode_end': hour})
+            await update.message.reply_text(f'✅ Кінець нічного режиму змінено на: {hour:02d}:00')
+        except ValueError:
+            await update.message.reply_text('❌ Невірне значення. Введіть число від 0 до 23.')
+            return
     
     context.user_data['awaiting'] = None
 
@@ -1505,6 +1733,11 @@ class MonitorThread(threading.Thread):
     
     async def send_status_notification(self, chat_id: str, new_status: str, last_change_time: int):
         """Send power status change notification with randomized phrases"""
+        # Check if night mode is active
+        if is_night_mode_active(chat_id):
+            logger.info(f'Night mode active for {chat_id}, skipping notification')
+            return
+        
         current_time = get_kyiv_time()
         duration = int(time.time() * MILLISECONDS_PER_SECOND) - last_change_time
         formatted_duration = format_duration_short(duration)
@@ -1561,10 +1794,16 @@ class MonitorThread(threading.Thread):
                         # Status changed!
                         logger.info(f'Status changed for {chat_id}: {previous_status} -> {new_status}')
                         
+                        # Calculate duration for history
+                        duration_ms = int(time.time() * MILLISECONDS_PER_SECOND) - last_change
+                        
+                        # Add to history (record previous status with its duration)
+                        add_status_to_history(chat_id, previous_status, duration_ms)
+                        
                         # Check debounce settings
                         debounce_enabled = settings.get('debounce_enabled', True)
                         debounce_seconds = settings.get('debounce_seconds', DEBOUNCE_SECONDS)
-                        time_since_last_change = (int(time.time() * MILLISECONDS_PER_SECOND) - last_change) / MILLISECONDS_PER_SECOND
+                        time_since_last_change = duration_ms / MILLISECONDS_PER_SECOND
                         
                         if debounce_enabled and time_since_last_change < debounce_seconds:
                             logger.info(f'Debounce: skipping notification for {chat_id}, last change was {time_since_last_change:.0f}s ago')
@@ -1826,6 +2065,7 @@ def main():
     application.add_handler(CallbackQueryHandler(handle_settings_callback, pattern='^settings_'))
     application.add_handler(CallbackQueryHandler(handle_format_callback, pattern='^format_'))
     application.add_handler(CallbackQueryHandler(handle_notification_callback, pattern='^notif_'))
+    application.add_handler(CallbackQueryHandler(handle_night_mode_callback, pattern='^night_mode_'))
     application.add_handler(CallbackQueryHandler(handle_delete_callback, pattern='^delete_'))
     application.add_handler(CallbackQueryHandler(handle_graph_type_callback, pattern='^graph_type_'))
     application.add_handler(CallbackQueryHandler(handle_region_callback, pattern='^region_'))
