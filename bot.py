@@ -21,7 +21,7 @@ from typing import Optional, Dict, List
 try:
     import requests
 except ImportError:
-    logger.error('requests library not found. Install with: pip install requests>=2.31.0')
+    print('ERROR: requests library not found. Install with: pip install requests>=2.31.0')
     sys.exit(1)
 
 try:
@@ -30,7 +30,7 @@ try:
     from telegram.constants import ParseMode, ChatMemberStatus
     from telegram.error import TelegramError
 except ImportError:
-    logger.error('python-telegram-bot library not found. Install with: pip install python-telegram-bot>=20.0,<21.0')
+    print('ERROR: python-telegram-bot library not found. Install with: pip install python-telegram-bot>=20.0,<21.0')
     sys.exit(1)
 
 # Configure logging
@@ -80,7 +80,7 @@ MINUTES_PER_HOUR = 60
 HOURS_PER_DAY = 24
 
 if not BOT_TOKEN:
-    logger.error('BOT_TOKEN environment variable is required')
+    print('ERROR: BOT_TOKEN environment variable is required')
     sys.exit(1)
 
 # Randomized phrases for monitoring notifications
