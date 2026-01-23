@@ -7,38 +7,51 @@ Features: TCP monitoring, Graphenko updates, interactive menu-based UX
 import asyncio
 import hashlib
 import json
+import logging
 import os
+import re
 import socket
 import sys
 import threading
 import time
 import random
 from datetime import datetime, timezone, timedelta
-from typing import Optional, Dict, Any, List
+from typing import Optional, Dict, List
 
 try:
     import requests
 except ImportError:
-    print('ERROR: requests library not found. Install with: pip install requests>=2.31.0')
+    logger.error('requests library not found. Install with: pip install requests>=2.31.0')
     sys.exit(1)
 
 try:
-    from telegram import Update, ReplyKeyboardMarkup, InlineKeyboardMarkup, InlineKeyboardButton, InputMediaPhoto
+    from telegram import Update, ReplyKeyboardMarkup, InlineKeyboardMarkup, InlineKeyboardButton
     from telegram.ext import Application, CommandHandler, MessageHandler, CallbackQueryHandler, ChatMemberHandler, ContextTypes, filters
     from telegram.constants import ParseMode, ChatMemberStatus
     from telegram.error import TelegramError
 except ImportError:
-    print('ERROR: python-telegram-bot library not found. Install with: pip install python-telegram-bot>=20.0,<21.0')
+    logger.error('python-telegram-bot library not found. Install with: pip install python-telegram-bot>=20.0,<21.0')
     sys.exit(1)
 
+# Configure logging
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+)
+logger = logging.getLogger(__name__)
+
 # Bot version
-BOT_VERSION = '1.3.0'
+BOT_VERSION = '2.0.0'
 
 # Configuration from environment variables
 BOT_TOKEN = os.getenv('BOT_TOKEN')
 DEFAULT_CHAT_ID = os.getenv('CHAT_ID', '-1003523279109')
 CONFIG_FILE = 'graphenko-chats.json'
 ADMIN_USER_ID = int(os.getenv('ADMIN_USER_ID', '1026177113'))
+
+# Support contacts (configure via environment variables)
+SUPPORT_USERNAME = os.getenv('SUPPORT_USERNAME', '@Ivan200424')
+SUPPORT_EMAIL = os.getenv('SUPPORT_EMAIL', 'support@example.com')
 
 # Constants
 DEFAULT_HOST = '93.127.118.86'
@@ -67,7 +80,7 @@ MINUTES_PER_HOUR = 60
 HOURS_PER_DAY = 24
 
 if not BOT_TOKEN:
-    print('ERROR: BOT_TOKEN environment variable is required')
+    logger.error('BOT_TOKEN environment variable is required')
     sys.exit(1)
 
 # Randomized phrases for monitoring notifications
@@ -140,6 +153,10 @@ HELP_MENU_KEYBOARD = [
     ['🔙 Головне меню']
 ]
 
+# Thread-safe configuration lock
+_config_lock = threading.Lock()
+
+
 # Keep backward compatibility
 MAIN_MENU_KEYBOARD = MAIN_MENU_KEYBOARD_BASE
 
@@ -148,43 +165,45 @@ MAIN_MENU_KEYBOARD = MAIN_MENU_KEYBOARD_BASE
 # ============================================================================
 
 def load_config() -> Dict[str, Dict]:
-    """Load configuration from JSON file"""
-    if not os.path.exists(CONFIG_FILE):
-        return {}
-    
-    try:
-        with open(CONFIG_FILE, 'r', encoding='utf-8') as f:
-            data = json.load(f)
+    """Load configuration from JSON file (thread-safe)"""
+    with _config_lock:
+        if not os.path.exists(CONFIG_FILE):
+            return {}
         
-        # Convert from array format to dict
-        if isinstance(data, list):
-            config = {}
-            for item in data:
-                if isinstance(item, dict):
-                    for chat_id, settings in item.items():
-                        config[str(chat_id)] = settings
-            return config
-        return data
-    except Exception as e:
-        print(f'ERROR: Failed to load config: {e}')
-        return {}
+        try:
+            with open(CONFIG_FILE, 'r', encoding='utf-8') as f:
+                data = json.load(f)
+            
+            # Convert from array format to dict
+            if isinstance(data, list):
+                config = {}
+                for item in data:
+                    if isinstance(item, dict):
+                        for chat_id, settings in item.items():
+                            config[str(chat_id)] = settings
+                return config
+            return data
+        except Exception as e:
+            logger.error(f'Failed to load config: {e}')
+            return {}
 
 
 def save_config(config: Dict[str, Dict]) -> bool:
-    """Save configuration to JSON file"""
-    try:
-        # Convert to array format matching the original schema
-        data = []
-        for chat_id in sorted(config.keys()):
-            data.append({chat_id: config[chat_id]})
-        
-        with open(CONFIG_FILE, 'w', encoding='utf-8') as f:
-            json.dump(data, f, indent=2, ensure_ascii=False)
-            f.write('\n')
-        return True
-    except Exception as e:
-        print(f'ERROR: Failed to save config: {e}')
-        return False
+    """Save configuration to JSON file (thread-safe)"""
+    with _config_lock:
+        try:
+            # Convert to array format matching the original schema
+            data = []
+            for chat_id in sorted(config.keys()):
+                data.append({chat_id: config[chat_id]})
+            
+            with open(CONFIG_FILE, 'w', encoding='utf-8') as f:
+                json.dump(data, f, indent=2, ensure_ascii=False)
+                f.write('\n')
+            return True
+        except Exception as e:
+            logger.error(f'Failed to save config: {e}')
+            return False
 
 
 def get_chat_config(chat_id: str) -> Dict:
@@ -274,9 +293,71 @@ async def toggle_channel_pause(update: Update, chat_id: str, pause: bool):
     await update.message.reply_text(message, reply_markup=reply_keyboard)
 
 
+def build_region_keyboard() -> InlineKeyboardMarkup:
+    """Build region selection keyboard"""
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton('🏛 Київська область', callback_data='region_kyiv-region')],
+        [InlineKeyboardButton('🏙 м. Київ', callback_data='region_kyiv')],
+        [InlineKeyboardButton('🏭 Дніпро', callback_data='region_dnipro')],
+        [InlineKeyboardButton('🌊 Одеса', callback_data='region_odesa')]
+    ])
+
+
+def build_group_keyboard() -> InlineKeyboardMarkup:
+    """Build group selection keyboard"""
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton('1.1', callback_data='group_1.1'), InlineKeyboardButton('1.2', callback_data='group_1.2')],
+        [InlineKeyboardButton('2.1', callback_data='group_2.1'), InlineKeyboardButton('2.2', callback_data='group_2.2')],
+        [InlineKeyboardButton('3.1', callback_data='group_3.1'), InlineKeyboardButton('3.2', callback_data='group_3.2')],
+        [InlineKeyboardButton('4.1', callback_data='group_4.1'), InlineKeyboardButton('4.2', callback_data='group_4.2')],
+        [InlineKeyboardButton('5.1', callback_data='group_5.1'), InlineKeyboardButton('5.2', callback_data='group_5.2')],
+        [InlineKeyboardButton('6.1', callback_data='group_6.1'), InlineKeyboardButton('6.2', callback_data='group_6.2')]
+    ])
+
+
+def build_format_keyboard() -> InlineKeyboardMarkup:
+    """Build format selection keyboard"""
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton('🖼 Зображення', callback_data='format_image')],
+        [InlineKeyboardButton('📝 Текст', callback_data='format_text')],
+        [InlineKeyboardButton('🖼📝 Обидва', callback_data='format_both')]
+    ])
+
+
+def build_notification_keyboard() -> InlineKeyboardMarkup:
+    """Build notification toggle keyboard"""
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton('✅ Увімкнути', callback_data='notif_on')],
+        [InlineKeyboardButton('❌ Вимкнути', callback_data='notif_off')]
+    ])
+
+
+def build_delete_confirmation_keyboard() -> InlineKeyboardMarkup:
+    """Build delete confirmation keyboard"""
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton('✅ Так, видалити', callback_data='delete_confirm')],
+        [InlineKeyboardButton('❌ Ні, скасувати', callback_data='delete_cancel')]
+    ])
+
+
 # ============================================================================
 # Utility Functions
 # ============================================================================
+
+def is_valid_ip_or_hostname(value: str) -> bool:
+    """Validate IP address or hostname/DDNS"""
+    # IPv4 pattern
+    ipv4_pattern = r'^(\d{1,3}\.){3}\d{1,3}$'
+    # Hostname pattern (simplified)
+    hostname_pattern = r'^[a-zA-Z0-9]([a-zA-Z0-9\-]{0,61}[a-zA-Z0-9])?(\.[a-zA-Z0-9]([a-zA-Z0-9\-]{0,61}[a-zA-Z0-9])?)*$'
+    
+    if re.match(ipv4_pattern, value):
+        # Validate each octet
+        octets = value.split('.')
+        return all(0 <= int(octet) <= 255 for octet in octets)
+    
+    return bool(re.match(hostname_pattern, value))
+
 
 def calculate_kyiv_offset() -> int:
     """Calculate the UTC offset for Kyiv timezone (accounting for DST)"""
@@ -400,10 +481,10 @@ def fetch_outage_schedule(region: str, group: str) -> Optional[Dict]:
             try:
                 return response.json()
             except ValueError as json_error:
-                print(f'Error parsing JSON from outage schedule: {json_error}')
+                logger.error(f'Error parsing JSON from outage schedule: {json_error}')
                 return None
     except Exception as e:
-        print(f'Error fetching outage schedule: {e}')
+        logger.error(f'Error fetching outage schedule: {e}')
     return None
 
 
@@ -523,7 +604,7 @@ def check_tcp_connection(host: str, port: int, timeout: int = 5) -> bool:
             result = sock.connect_ex((host, port))
             return result == 0
     except Exception as e:
-        print(f'ERROR: TCP check failed for {host}:{port}: {e}')
+        logger.error(f'TCP check failed for {host}:{port}: {e}')
         return False
 
 
@@ -585,7 +666,7 @@ async def handle_my_chat_member(update: Update, context: ContextTypes.DEFAULT_TY
             new_status in [ChatMemberStatus.ADMINISTRATOR, ChatMemberStatus.MEMBER] and 
             old_status in [ChatMemberStatus.LEFT, ChatMemberStatus.BANNED]):
             chat_id = str(chat.id)
-            print(f'Bot added to channel: {chat.title} (ID: {chat_id})')
+            logger.info(f'Bot added to channel: {chat.title} (ID: {chat_id})')
             
             # Initialize or update config for this channel
             update_chat_config(chat_id, {
@@ -603,16 +684,16 @@ async def handle_my_chat_member(update: Update, context: ContextTypes.DEFAULT_TY
                          'Тепер ви можете використовувати меню для налаштування моніторингу та графіків.'
                 )
             except Exception as e:
-                print(f'Could not send confirmation to channel {chat_id}: {e}')
+                logger.warning(f'Could not send confirmation to channel {chat_id}: {e}')
                 
         elif (chat.type == 'channel' and 
               new_status in [ChatMemberStatus.LEFT, ChatMemberStatus.BANNED] and 
               old_status in [ChatMemberStatus.ADMINISTRATOR, ChatMemberStatus.MEMBER]):
             chat_id = str(chat.id)
-            print(f'Bot removed from channel: {chat.title} (ID: {chat_id})')
+            logger.info(f'Bot removed from channel: {chat.title} (ID: {chat_id})')
             
     except Exception as e:
-        print(f'Error in handle_my_chat_member: {e}')
+        logger.error(f'Error in handle_my_chat_member: {e}')
 
 
 async def handle_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -656,7 +737,7 @@ async def handle_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
             creation_str = created_dt.strftime('%Y-%m-%d %H:%M:%S')
             days_ago = (datetime.now(timezone.utc) - created_dt).days
             creation_text = f'{creation_str}, ({days_ago}д тому)'
-        except:
+        except Exception:
             creation_text = 'невідомо'
     else:
         creation_text = 'невідомо'
@@ -819,14 +900,7 @@ async def handle_region_callback(update: Update, context: ContextTypes.DEFAULT_T
     update_chat_config(chat_id, {'region': region})
     
     # Show group selection inline keyboard for step 2
-    keyboard = InlineKeyboardMarkup([
-        [InlineKeyboardButton('1.1', callback_data='group_1.1'), InlineKeyboardButton('1.2', callback_data='group_1.2')],
-        [InlineKeyboardButton('2.1', callback_data='group_2.1'), InlineKeyboardButton('2.2', callback_data='group_2.2')],
-        [InlineKeyboardButton('3.1', callback_data='group_3.1'), InlineKeyboardButton('3.2', callback_data='group_3.2')],
-        [InlineKeyboardButton('4.1', callback_data='group_4.1'), InlineKeyboardButton('4.2', callback_data='group_4.2')],
-        [InlineKeyboardButton('5.1', callback_data='group_5.1'), InlineKeyboardButton('5.2', callback_data='group_5.2')],
-        [InlineKeyboardButton('6.1', callback_data='group_6.1'), InlineKeyboardButton('6.2', callback_data='group_6.2')]
-    ])
+    keyboard = build_group_keyboard()
     await query.message.reply_text(
         f'✅ Регіон змінено на: *{region_name}*\n\n'
         'Крок 2 з 3: Оберіть номер групи:',
@@ -848,61 +922,13 @@ async def handle_group_callback(update: Update, context: ContextTypes.DEFAULT_TY
     update_chat_config(chat_id, {'group': group})
     
     # Show format selection inline keyboard for step 3
-    keyboard = InlineKeyboardMarkup([
-        [InlineKeyboardButton('🖼 Зображення', callback_data='format_image')],
-        [InlineKeyboardButton('📝 Текст', callback_data='format_text')],
-        [InlineKeyboardButton('🖼📝 Обидва', callback_data='format_both')]
-    ])
+    keyboard = build_format_keyboard()
     await query.message.reply_text(
         f'✅ Групу змінено на: *{group}*\n\n'
         'Крок 3 з 3: Оберіть формат графіків:',
         parse_mode=ParseMode.MARKDOWN,
         reply_markup=keyboard
     )
-
-
-async def handle_graphs_now_old(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handle get graphs now"""
-    chat_id = str(update.effective_chat.id)
-    config = get_chat_config(chat_id)
-    
-    region = config.get('region', 'kyiv')
-    group = config.get('group', '3.1')
-    format_pref = config.get('format_preference', 'image')
-    group_formatted = convert_group_to_url_format(group)
-    
-    # Construct image URL
-    image_url = f'{OUTAGE_IMAGES_BASE}{region}/gpv-{group_formatted}-emergency.png'
-    
-    if format_pref in ['image', 'both']:
-        # Send image
-        cb = int(time.time() * MILLISECONDS_PER_SECOND)
-        photo_url = f'{image_url}?cb={cb}'
-        caption = f'⚡️ Графік для черги {group}, регіон: {region}'
-        
-        try:
-            await update.message.reply_photo(photo=photo_url, caption=caption)
-        except Exception as e:
-            await update.message.reply_text(f'❌ Помилка завантаження зображення: {e}')
-    
-    if format_pref in ['text', 'both']:
-        # Send text (stub - would parse actual schedule)
-        today = get_kyiv_datetime()
-        tomorrow = today + timedelta(days=1)
-        
-        today_name = WEEKDAYS_UK[today.weekday()]
-        tomorrow_name = WEEKDAYS_UK[tomorrow.weekday()]
-        
-        text_schedule = f'''💡Оновлено графік відключень на *сьогодні, {today.strftime('%d.%m.%Y')} ({today_name})*, для черги {group}:
-
-🪫 *03:30 - 21:00 (~17.5 год)*
-
-💡Оновлено графік відключень на *завтра, {tomorrow.strftime('%d.%m.%Y')} ({tomorrow_name})*, для черги {group}:
-
-🪫 *00:30 - 04:00 (~3.5 год)*
-🪫 *06:00 - 07:30 (~1.5 год)*'''
-        
-        await update.message.reply_text(text_schedule, parse_mode=ParseMode.MARKDOWN)
 
 
 async def handle_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -977,37 +1003,21 @@ async def handle_settings_callback(update: Update, context: ContextTypes.DEFAULT
         context.user_data['awaiting'] = 'ip'
     
     elif action == 'settings_format':
-        keyboard = InlineKeyboardMarkup([
-            [InlineKeyboardButton('🖼 Зображення', callback_data='format_image')],
-            [InlineKeyboardButton('📝 Текст', callback_data='format_text')],
-            [InlineKeyboardButton('🖼📝 Обидва', callback_data='format_both')]
-        ])
+        keyboard = build_format_keyboard()
         await query.message.reply_text(
             '📊 Оберіть формат графіків:',
             reply_markup=keyboard
         )
     
     elif action == 'settings_region':
-        keyboard = InlineKeyboardMarkup([
-            [InlineKeyboardButton('🏛 Київська область', callback_data='region_kyiv-region')],
-            [InlineKeyboardButton('🏙 м. Київ', callback_data='region_kyiv')],
-            [InlineKeyboardButton('🏭 Дніпро', callback_data='region_dnipro')],
-            [InlineKeyboardButton('🌊 Одеса', callback_data='region_odesa')]
-        ])
+        keyboard = build_region_keyboard()
         await query.message.reply_text(
             '🗺 Оберіть регіон:',
             reply_markup=keyboard
         )
     
     elif action == 'settings_group':
-        keyboard = InlineKeyboardMarkup([
-            [InlineKeyboardButton('1.1', callback_data='group_1.1'), InlineKeyboardButton('1.2', callback_data='group_1.2')],
-            [InlineKeyboardButton('2.1', callback_data='group_2.1'), InlineKeyboardButton('2.2', callback_data='group_2.2')],
-            [InlineKeyboardButton('3.1', callback_data='group_3.1'), InlineKeyboardButton('3.2', callback_data='group_3.2')],
-            [InlineKeyboardButton('4.1', callback_data='group_4.1'), InlineKeyboardButton('4.2', callback_data='group_4.2')],
-            [InlineKeyboardButton('5.1', callback_data='group_5.1'), InlineKeyboardButton('5.2', callback_data='group_5.2')],
-            [InlineKeyboardButton('6.1', callback_data='group_6.1'), InlineKeyboardButton('6.2', callback_data='group_6.2')]
-        ])
+        keyboard = build_group_keyboard()
         await query.message.reply_text(
             '🔢 Оберіть номер групи:',
             reply_markup=keyboard
@@ -1015,10 +1025,7 @@ async def handle_settings_callback(update: Update, context: ContextTypes.DEFAULT
     
     elif action == 'settings_notifications':
         current = config.get('notifications_enabled', True)
-        keyboard = InlineKeyboardMarkup([
-            [InlineKeyboardButton('✅ Увімкнути', callback_data='notif_on')],
-            [InlineKeyboardButton('❌ Вимкнути', callback_data='notif_off')]
-        ])
+        keyboard = build_notification_keyboard()
         await query.message.reply_text(
             f'🔕 Сповіщення зараз: {"✅ Увімкнено" if current else "❌ Вимкнено"}\n\n'
             'Оберіть стан:',
@@ -1036,15 +1043,12 @@ async def handle_settings_callback(update: Update, context: ContextTypes.DEFAULT
     elif action == 'settings_support':
         await query.message.reply_text(
             '⚒️ Техпідтримка\n\n'
-            'З питаннями звертайтесь: @support_username\n'
-            'Email: support@example.com'
+            f'З питаннями звертайтесь: {SUPPORT_USERNAME}\n'
+            f'Email: {SUPPORT_EMAIL}'
         )
     
     elif action == 'settings_delete':
-        keyboard = InlineKeyboardMarkup([
-            [InlineKeyboardButton('✅ Так, видалити', callback_data='delete_confirm')],
-            [InlineKeyboardButton('❌ Ні, скасувати', callback_data='delete_cancel')]
-        ])
+        keyboard = build_delete_confirmation_keyboard()
         await query.message.reply_text(
             '⚠️ Ви впевнені, що хочете видалити бота з каналу?\n\n'
             'Всі налаштування будуть втрачені!',
@@ -1195,12 +1199,7 @@ async def handle_text_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
             context.user_data['awaiting'] = 'ip'
         elif text == '🗺 Регіон і Група':
             # Start region/group/format configuration flow
-            keyboard = InlineKeyboardMarkup([
-                [InlineKeyboardButton('🏛 Київська область', callback_data='region_kyiv-region')],
-                [InlineKeyboardButton('🏙 м. Київ', callback_data='region_kyiv')],
-                [InlineKeyboardButton('🏭 Дніпро', callback_data='region_dnipro')],
-                [InlineKeyboardButton('🌊 Одеса', callback_data='region_odesa')]
-            ])
+            keyboard = build_region_keyboard()
             await update.message.reply_text(
                 '🗺 Налаштування регіону, групи та формату графіків\n\n'
                 'Крок 1 з 3: Оберіть регіон:',
@@ -1209,10 +1208,7 @@ async def handle_text_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
         elif text == '🔔 Сповіщення':
             config = get_chat_config(chat_id)
             current = config.get('notifications_enabled', True)
-            keyboard = InlineKeyboardMarkup([
-                [InlineKeyboardButton('✅ Увімкнути', callback_data='notif_on')],
-                [InlineKeyboardButton('❌ Вимкнути', callback_data='notif_off')]
-            ])
+            keyboard = build_notification_keyboard()
             await update.message.reply_text(
                 f'🔔 Сповіщення зараз: {"✅ Увімкнено" if current else "❌ Вимкнено"}\n\n'
                 'Оберіть стан:',
@@ -1269,14 +1265,11 @@ async def handle_text_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
         elif text == '⚒️ Техпідтримка':
             await update.message.reply_text(
                 '⚒️ Техпідтримка\n\n'
-                'З питаннями звертайтесь: @support_username\n'
-                'Email: support@example.com'
+                f'З питаннями звертайтесь: {SUPPORT_USERNAME}\n'
+                f'Email: {SUPPORT_EMAIL}'
             )
         elif text == '🗑️ Видалити бота':
-            keyboard = InlineKeyboardMarkup([
-                [InlineKeyboardButton('✅ Так, видалити', callback_data='delete_confirm')],
-                [InlineKeyboardButton('❌ Ні, скасувати', callback_data='delete_cancel')]
-            ])
+            keyboard = build_delete_confirmation_keyboard()
             await update.message.reply_text(
                 '⚠️ Ви впевнені, що хочете видалити бота з каналу?\n\n'
                 'Всі налаштування будуть втрачені!',
@@ -1286,10 +1279,14 @@ async def handle_text_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     # Process input based on what we're awaiting
     if awaiting == 'ip':
-        update_chat_config(chat_id, {'monitor_host': text.strip()})
+        ip_value = text.strip()
+        if not is_valid_ip_or_hostname(ip_value):
+            await update.message.reply_text('❌ Невірний формат IP-адреси або DDNS. Спробуйте ще раз.')
+            return
+        update_chat_config(chat_id, {'monitor_host': ip_value})
         # Refresh keyboard after changes
         keyboard = ReplyKeyboardMarkup(build_settings_keyboard(chat_id), resize_keyboard=True)
-        await update.message.reply_text(f'✅ IP-адресу змінено на: {text.strip()}', reply_markup=keyboard)
+        await update.message.reply_text(f'✅ IP-адресу змінено на: {ip_value}', reply_markup=keyboard)
         context.user_data['awaiting'] = None
         return
     elif awaiting == 'region':
@@ -1384,13 +1381,13 @@ class MonitorThread(threading.Thread):
         
         try:
             await self.application.bot.send_message(chat_id=chat_id, text=message, parse_mode=ParseMode.MARKDOWN)
-            print(f'Status notification sent to {chat_id}: {new_status}')
+            logger.info(f'Status notification sent to {chat_id}: {new_status}')
         except Exception as e:
-            print(f'ERROR sending notification to {chat_id}: {e}')
+            logger.error(f'ERROR sending notification to {chat_id}: {e}')
     
     def run(self):
         """Main monitoring loop"""
-        print('Monitor thread started')
+        logger.info('Monitor thread started')
         
         while self.running:
             try:
@@ -1409,7 +1406,7 @@ class MonitorThread(threading.Thread):
                     new_status = 'online' if is_online else 'offline'
                     
                     current_time = get_kyiv_time()
-                    print(f'[{current_time}] Monitor {chat_id}: {host}:{port} -> {new_status}')
+                    logger.debug(f'[ {chat_id}: {host}:{port} -> {new_status}')
                     
                     # Detect state change
                     previous_status = settings.get('monitor_last_status')
@@ -1417,7 +1414,7 @@ class MonitorThread(threading.Thread):
                     
                     if previous_status and previous_status != new_status:
                         # Status changed!
-                        print(f'Status changed for {chat_id}: {previous_status} -> {new_status}')
+                        logger.info(f'Status changed for {chat_id}: {previous_status} -> {new_status}')
                         
                         # Send notification using the application's event loop
                         try:
@@ -1428,7 +1425,7 @@ class MonitorThread(threading.Thread):
                             # Wait for completion with timeout to catch errors
                             future.result(timeout=10)
                         except Exception as e:
-                            print(f'ERROR in notification: {e}')
+                            logger.error(f'ERROR in notification: {e}')
                         
                         # Update state
                         settings['monitor_last_status'] = new_status
@@ -1437,7 +1434,7 @@ class MonitorThread(threading.Thread):
                         save_config(config)
                     elif not previous_status:
                         # First check - initialize without notification
-                        print(f'Initializing monitor state for {chat_id}: {new_status}')
+                        logger.info(f'Initializing monitor state for {chat_id}: {new_status}')
                         settings['monitor_last_status'] = new_status
                         settings['monitor_last_change'] = int(time.time() * MILLISECONDS_PER_SECOND)
                         config[chat_id] = settings
@@ -1447,10 +1444,10 @@ class MonitorThread(threading.Thread):
                 time.sleep(DEFAULT_INTERVAL)
             
             except Exception as e:
-                print(f'ERROR in monitor thread: {e}')
+                logger.error(f'ERROR in monitor thread: {e}')
                 time.sleep(DEFAULT_INTERVAL)
         
-        print('Monitor thread stopped')
+        logger.info('Monitor thread stopped')
 
 
 # ============================================================================
@@ -1475,11 +1472,11 @@ class GraphenkoThread(threading.Thread):
         try:
             chat_id_int = int(chat_id)
             if chat_id_int > 0:
-                print(f'Skipping private chat {chat_id} for graph updates')
+                logger.debug(f'Skipping private chat {chat_id} for graph updates')
                 return
         except (ValueError, TypeError):
             # If chat_id is not numeric (e.g., test data), skip validation
-            print(f'Warning: Non-numeric chat_id {chat_id}, proceeding with update')
+            logger.warning(f'Non-numeric chat_id {chat_id}, proceeding with update')
         
         region = settings.get('region', 'kyiv')
         group = settings.get('group', '3.1')
@@ -1487,7 +1484,7 @@ class GraphenkoThread(threading.Thread):
         group_formatted = convert_group_to_url_format(group)
         
         # Log region for diagnostics
-        print(f'Using region: {region} for chat {chat_id}')
+        logger.debug(f'Using region: {region} for chat {chat_id}')
         
         image_url = f'{OUTAGE_IMAGES_BASE}{region}/gpv-{group_formatted}-emergency.png'
         
@@ -1495,23 +1492,23 @@ class GraphenkoThread(threading.Thread):
         try:
             response = requests.get(image_url, timeout=30, verify=True)
             if response.status_code != 200:
-                print(f'Failed to fetch image for {chat_id}: HTTP {response.status_code}')
+                logger.warning(f'Failed to fetch image for {chat_id}: HTTP {response.status_code}')
                 return
             
-            new_hash = hashlib.md5(response.content).hexdigest()
+            new_hash = hashlib.sha256(response.content).hexdigest()
         except Exception as e:
-            print(f'Error fetching image for {chat_id}: {e}')
+            logger.error(f'Error fetching image for {chat_id}: {e}')
             return
         
         # Compare with previous hash
         last_hash = settings.get('last_graph_hash')
         if new_hash == last_hash:
             # Graph hasn't changed - skip update
-            print(f'Graph unchanged for {chat_id}, skipping update')
+            logger.debug(f'Graph unchanged for {chat_id}, skipping update')
             return
         
         # Graph changed - publish update
-        print(f'Graph changed for {chat_id}, publishing update')
+        logger.info(f'Graph changed for {chat_id}, publishing update')
         
         # Update hash in config
         update_chat_config(chat_id, {'last_graph_hash': new_hash})
@@ -1541,11 +1538,11 @@ class GraphenkoThread(threading.Thread):
                 await self.application.bot.send_message(chat_id=chat_id, text=text_schedule)
         
         except Exception as e:
-            print(f'ERROR sending graph update to {chat_id}: {e}')
+            logger.error(f'ERROR sending graph update to {chat_id}: {e}')
     
     def run(self):
         """Main Graphenko update loop"""
-        print('Graphenko thread started')
+        logger.info('Graphenko thread started')
         
         first_run = True
         
@@ -1562,7 +1559,7 @@ class GraphenkoThread(threading.Thread):
                     else:
                         min_interval = GRAPHENKO_UPDATE_INTERVAL
                     
-                    print(f'Sleeping for {min_interval} seconds until next graph check')
+                    logger.debug(f'Sleeping for {min_interval} seconds until next graph check')
                     time.sleep(min_interval)
                 first_run = False
                 
@@ -1584,14 +1581,14 @@ class GraphenkoThread(threading.Thread):
                         # Wait for completion with timeout to catch errors
                         future.result(timeout=30)
                     except Exception as e:
-                        print(f'ERROR in graph update: {e}')
+                        logger.error(f'ERROR in graph update: {e}')
                     
                     time.sleep(1)  # Rate limiting
             
             except Exception as e:
-                print(f'ERROR in Graphenko thread: {e}')
+                logger.error(f'ERROR in Graphenko thread: {e}')
         
-        print('Graphenko thread stopped')
+        logger.info('Graphenko thread stopped')
 
 
 # ============================================================================
@@ -1600,9 +1597,9 @@ class GraphenkoThread(threading.Thread):
 
 def main():
     """Main bot function"""
-    print('Starting DTEK Bot with interactive UX...')
-    print(f'Bot token: {BOT_TOKEN[:10]}...')
-    print(f'Config file: {CONFIG_FILE}')
+    logger.info('Starting DTEK Bot with interactive UX...')
+    logger.info(f'Bot token: {BOT_TOKEN[:10]}...')
+    logger.info(f'Config file: {CONFIG_FILE}')
     
     # Create application
     application = Application.builder().token(BOT_TOKEN).build()
@@ -1619,29 +1616,42 @@ def main():
     application.add_handler(CallbackQueryHandler(handle_group_callback, pattern='^group_'))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text_input))
     
-    # Get or create the event loop for the current thread
-    try:
+    # Use post_init to start background tasks with the correct event loop
+    async def post_init(application: Application):
+        """Start background tasks after application is initialized"""
         loop = asyncio.get_running_loop()
-    except RuntimeError:
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
+        
+        # Start background threads with the correct event loop
+        monitor_thread = MonitorThread(application, loop)
+        monitor_thread.start()
+        
+        graphenko_thread = GraphenkoThread(application, loop)
+        graphenko_thread.start()
+        
+        # Store references for cleanup
+        application.bot_data['monitor_thread'] = monitor_thread
+        application.bot_data['graphenko_thread'] = graphenko_thread
+        
+        logger.info('Background threads started')
     
-    # Start background threads with event loop
-    monitor_thread = MonitorThread(application, loop)
-    monitor_thread.start()
+    async def post_shutdown(application: Application):
+        """Clean up background tasks"""
+        monitor_thread = application.bot_data.get('monitor_thread')
+        graphenko_thread = application.bot_data.get('graphenko_thread')
+        
+        if monitor_thread:
+            monitor_thread.stop()
+        if graphenko_thread:
+            graphenko_thread.stop()
+        
+        logger.info('Background threads stopped')
     
-    graphenko_thread = GraphenkoThread(application, loop)
-    graphenko_thread.start()
+    application.post_init = post_init
+    application.post_shutdown = post_shutdown
     
     # Run bot
-    try:
-        print('Bot started successfully!')
-        application.run_polling(allowed_updates=['message', 'callback_query', 'my_chat_member'])
-    except KeyboardInterrupt:
-        print('\nStopping bot...')
-        monitor_thread.stop()
-        graphenko_thread.stop()
-        print('Bot stopped')
+    logger.info('Bot started successfully!')
+    application.run_polling(allowed_updates=['message', 'callback_query', 'my_chat_member'])
 
 
 if __name__ == '__main__':
