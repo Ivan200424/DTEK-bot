@@ -24,8 +24,8 @@ except ImportError:
 
 try:
     from telegram import Update, ReplyKeyboardMarkup, InlineKeyboardMarkup, InlineKeyboardButton, InputMediaPhoto
-    from telegram.ext import Application, CommandHandler, MessageHandler, CallbackQueryHandler, ContextTypes, filters
-    from telegram.constants import ParseMode
+    from telegram.ext import Application, CommandHandler, MessageHandler, CallbackQueryHandler, ChatMemberHandler, ContextTypes, filters
+    from telegram.constants import ParseMode, ChatMemberStatus
     from telegram.error import TelegramError
 except ImportError:
     print('ERROR: python-telegram-bot library not found. Install with: pip install python-telegram-bot>=20.0,<21.0')
@@ -119,6 +119,7 @@ MAIN_MENU_KEYBOARD_BASE = [
     ['🌐 IP / Запасний IP', '🗺 Регіон і Група'],
     ['🔔 Сповіщення', '⏱ Інтервали'],
     ['✏️ Заголовок / Опис каналу'],
+    ['➕ Додати канал'],
     ['⚒️ Техпідтримка', '🗑️ Видалити бота'],
     ['❓ Допомога']
 ]
@@ -247,7 +248,7 @@ def build_settings_keyboard(chat_id: str) -> list:
     
     # Copy base keyboard and insert pause/resume button
     keyboard = [row[:] for row in MAIN_MENU_KEYBOARD_BASE]  # Deep copy of rows
-    keyboard.insert(5, [pause_resume_text])  # Insert before "⚒️ Техпідтримка і 🗑️ Видалити бота"
+    keyboard.insert(6, [pause_resume_text])  # Insert before "⚒️ Техпідтримка і 🗑️ Видалити бота"
     return keyboard
 
 
@@ -567,6 +568,53 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
     
     await update.message.reply_text(welcome_text, reply_markup=keyboard, parse_mode=ParseMode.MARKDOWN)
+
+
+async def handle_my_chat_member(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle bot being added/removed from chat or channel"""
+    try:
+        # Get the chat member update
+        my_chat_member = update.my_chat_member
+        if not my_chat_member:
+            return
+        
+        chat = my_chat_member.chat
+        new_status = my_chat_member.new_chat_member.status
+        old_status = my_chat_member.old_chat_member.status
+        
+        # Check if bot was added to a channel as administrator
+        if (chat.type == 'channel' and 
+            new_status in [ChatMemberStatus.ADMINISTRATOR, ChatMemberStatus.MEMBER] and 
+            old_status in [ChatMemberStatus.LEFT, ChatMemberStatus.BANNED]):
+            chat_id = str(chat.id)
+            print(f'Bot added to channel: {chat.title} (ID: {chat_id})')
+            
+            # Initialize or update config for this channel
+            update_chat_config(chat_id, {
+                'channel_title': chat.title or '',
+                'channel_description': chat.description or '',
+                'last_updated': datetime.now(timezone.utc).isoformat()
+            })
+            
+            # Try to send a confirmation message if possible
+            try:
+                await context.bot.send_message(
+                    chat_id=chat_id,
+                    text=f'✅ Бот успішно додано до каналу "{chat.title}"!\n\n'
+                         f'Chat ID каналу ({chat_id}) збережено в конфігурації.\n\n'
+                         'Тепер ви можете використовувати меню для налаштування моніторингу та графіків.'
+                )
+            except Exception as e:
+                print(f'Could not send confirmation to channel {chat_id}: {e}')
+                
+        elif (chat.type == 'channel' and 
+              new_status in [ChatMemberStatus.LEFT, ChatMemberStatus.BANNED] and 
+              old_status in [ChatMemberStatus.ADMINISTRATOR, ChatMemberStatus.MEMBER]):
+            chat_id = str(chat.id)
+            print(f'Bot removed from channel: {chat.title} (ID: {chat_id})')
+            
+    except Exception as e:
+        print(f'Error in handle_my_chat_member: {e}')
 
 
 async def handle_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1211,6 +1259,25 @@ async def handle_text_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 'Введіть новий заголовок каналу:'
             )
             context.user_data['awaiting'] = 'title'
+        elif text == '➕ Додати канал':
+            # Show instructions for adding the bot to a channel
+            instructions = (
+                '➕ *Як додати бота до каналу*\n\n'
+                '*Крок 1:* Додайте бота до каналу як адміністратора\n'
+                '• Відкрийте налаштування каналу\n'
+                '• Перейдіть до "Адміністратори"\n'
+                '• Натисніть "Додати адміністратора"\n'
+                '• Знайдіть цього бота і додайте його\n'
+                '• Увімкніть право "Може змінювати інформацію про канал"\n\n'
+                '*Крок 2:* Відправте команду /start у каналі\n'
+                '• Це необхідно, щоб бот зберіг chat_id каналу\n\n'
+                '*Крок 3:* Використовуйте меню для налаштувань\n'
+                '• Налаштуйте моніторинг світла через меню "💡 Моніторинг"\n'
+                '• Налаштуйте графіки через меню "📈 Графіки"\n'
+                '• Змініть заголовок/опис через меню "✏️ Заголовок / Опис каналу"\n\n'
+                '✅ Після додавання бот буде автоматично оновлювати інформацію в каналі!'
+            )
+            await update.message.reply_text(instructions, parse_mode=ParseMode.MARKDOWN)
         elif text == '⚒️ Техпідтримка':
             await update.message.reply_text(
                 '⚒️ Техпідтримка\n\n'
@@ -1252,22 +1319,28 @@ async def handle_text_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(f'✅ Групу змінено на: {text.strip()}')
     elif awaiting == 'title':
         update_chat_config(chat_id, {'channel_title': text.strip()})
-        # Try to update channel title via Telegram API
-        try:
-            await context.bot.set_chat_title(chat_id=chat_id, title=text.strip())
-            await update.message.reply_text(f'✅ Заголовок каналу змінено\n\nТепер введіть новий опис каналу:')
-        except Exception as e:
-            await update.message.reply_text(f'✅ Заголовок збережено, але не вдалося змінити в Telegram: {e}\n\nТепер введіть новий опис каналу:')
+        # Try to update channel title via Telegram API only if this is a channel
+        if update.effective_chat.type == 'channel':
+            try:
+                await context.bot.set_chat_title(chat_id=chat_id, title=text.strip())
+                await update.message.reply_text(f'✅ Заголовок каналу змінено\n\nТепер введіть новий опис каналу:')
+            except Exception as e:
+                await update.message.reply_text(f'✅ Заголовок збережено, але не вдалося змінити в Telegram: {e}\n\nТепер введіть новий опис каналу:')
+        else:
+            await update.message.reply_text(f'✅ Заголовок збережено\n\n⚠️ Ця команда працює тільки в каналах. Додайте бота до каналу через "➕ Додати канал"\n\nТепер введіть новий опис каналу:')
         context.user_data['awaiting'] = 'description'
         return
     elif awaiting == 'description':
         update_chat_config(chat_id, {'channel_description': text.strip()})
-        # Try to update channel description via Telegram API
-        try:
-            await context.bot.set_chat_description(chat_id=chat_id, description=text.strip())
-            await update.message.reply_text(f'✅ Опис каналу змінено')
-        except Exception as e:
-            await update.message.reply_text(f'✅ Опис збережено, але не вдалося змінити в Telegram: {e}')
+        # Try to update channel description via Telegram API only if this is a channel
+        if update.effective_chat.type == 'channel':
+            try:
+                await context.bot.set_chat_description(chat_id=chat_id, description=text.strip())
+                await update.message.reply_text(f'✅ Опис каналу змінено')
+            except Exception as e:
+                await update.message.reply_text(f'✅ Опис збережено, але не вдалося змінити в Telegram: {e}')
+        else:
+            await update.message.reply_text(f'✅ Опис збережено\n\n⚠️ Ця команда працює тільки в каналах. Додайте бота до каналу через "➕ Додати канал"')
         # Refresh keyboard after changes
         keyboard = ReplyKeyboardMarkup(build_settings_keyboard(chat_id), resize_keyboard=True)
         await update.message.reply_text('Налаштування збережено.', reply_markup=keyboard)
@@ -1555,6 +1628,7 @@ def main():
     
     # Add handlers
     application.add_handler(CommandHandler('start', start))
+    application.add_handler(ChatMemberHandler(handle_my_chat_member, ChatMemberHandler.MY_CHAT_MEMBER))
     application.add_handler(CallbackQueryHandler(handle_settings_callback, pattern='^settings_'))
     application.add_handler(CallbackQueryHandler(handle_format_callback, pattern='^format_'))
     application.add_handler(CallbackQueryHandler(handle_notification_callback, pattern='^notif_'))
