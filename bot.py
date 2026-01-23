@@ -32,7 +32,7 @@ except ImportError:
     sys.exit(1)
 
 # Bot version
-BOT_VERSION = '1.2.0'
+BOT_VERSION = '1.3.0'
 
 # Configuration from environment variables
 BOT_TOKEN = os.getenv('BOT_TOKEN')
@@ -116,7 +116,7 @@ PHRASES_POWER_GONE_VARIATIONS = [
 MAIN_MENU_KEYBOARD_BASE = [
     ['📊 Статус', '💡 Моніторинг'],
     ['📈 Графіки'],
-    ['🌐 IP / Запасний IP', '🗺 Регіон і Група'],
+    ['🌐 IP', '🗺 Регіон і Група'],
     ['🔔 Сповіщення', '⏱ Інтервали'],
     ['✏️ Заголовок / Опис каналу'],
     ['➕ Додати канал'],
@@ -202,8 +202,6 @@ def get_chat_config(chat_id: str) -> Dict:
             'monitor_port': DEFAULT_PORT,
             'monitor_interval_sec': DEFAULT_INTERVAL,
             'monitor_enabled': False,
-            'fallback_host': None,
-            'fallback_port': None,
             'light_paused': False,
             'graphs_paused': False,
             'channel_title': '',
@@ -649,7 +647,6 @@ async def handle_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     # IP addresses
     primary_ip = config.get('monitor_host', DEFAULT_HOST)
-    fallback_ip = config.get('fallback_host', 'немає')
     
     # Creation date
     creation_date = config.get('creation_date')
@@ -684,8 +681,6 @@ async def handle_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 🌐 IP-адреса / DDNS:
     {primary_ip}
-🌐 Запасна IP-адреса / DDNS:
-    {fallback_ip}
 📅 Дата створення каналу:
     {creation_text}
 👤 Кількість юзерів у каналі: {user_count}
@@ -950,7 +945,7 @@ async def handle_settings_menu(update: Update, context: ContextTypes.DEFAULT_TYP
 
 Використовуйте кнопки нижче для керування налаштуваннями:
 
-🌐 IP / Запасний IP - змінити IP-адреси моніторингу
+🌐 IP - змінити IP-адресу моніторингу
 🗺 Регіон і Група - налаштувати регіон, групу та формат графіків
 🔔 Сповіщення - увімкнути/вимкнути сповіщення
 ⏱ Інтервали - налаштувати інтервали перевірки
@@ -980,13 +975,6 @@ async def handle_settings_callback(update: Update, context: ContextTypes.DEFAULT
             'Приклад: 93.127.118.86 або myhost.ddns.net'
         )
         context.user_data['awaiting'] = 'ip'
-    
-    elif action == 'settings_fallback_ip':
-        await query.message.reply_text(
-            '🌐 Введіть запасну IP-адресу або DDNS:\n\n'
-            'Приклад: 192.168.1.1 або backup.ddns.net'
-        )
-        context.user_data['awaiting'] = 'fallback_ip'
     
     elif action == 'settings_format':
         keyboard = InlineKeyboardMarkup([
@@ -1197,11 +1185,11 @@ async def handle_text_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await toggle_channel_pause(update, chat_id, pause=True)
         elif text == '✅ Відновити роботу каналу':
             await toggle_channel_pause(update, chat_id, pause=False)
-        elif text == '🌐 IP / Запасний IP':
+        elif text == '🌐 IP':
             # Start IP configuration flow
             await update.message.reply_text(
-                '🌐 Налаштування IP-адрес\n\n'
-                'Введіть основну IP-адресу або DDNS:\n\n'
+                '🌐 Налаштування IP-адреси\n\n'
+                'Введіть IP-адресу або DDNS:\n\n'
                 'Приклад: 93.127.118.86 або myhost.ddns.net'
             )
             context.user_data['awaiting'] = 'ip'
@@ -1299,18 +1287,11 @@ async def handle_text_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # Process input based on what we're awaiting
     if awaiting == 'ip':
         update_chat_config(chat_id, {'monitor_host': text.strip()})
-        await update.message.reply_text(f'✅ IP-адресу змінено на: {text.strip()}\n\nТепер введіть запасну IP-адресу або DDNS (або напишіть "skip" щоб пропустити):')
-        context.user_data['awaiting'] = 'fallback_ip'
-        return
-    elif awaiting == 'fallback_ip':
-        if text.strip().lower() != 'skip':
-            update_chat_config(chat_id, {'fallback_host': text.strip()})
-            await update.message.reply_text(f'✅ Запасну IP-адресу змінено на: {text.strip()}')
-        else:
-            await update.message.reply_text('✅ Запасну IP-адресу пропущено')
         # Refresh keyboard after changes
         keyboard = ReplyKeyboardMarkup(build_settings_keyboard(chat_id), resize_keyboard=True)
-        await update.message.reply_text('Налаштування збережено.', reply_markup=keyboard)
+        await update.message.reply_text(f'✅ IP-адресу змінено на: {text.strip()}', reply_markup=keyboard)
+        context.user_data['awaiting'] = None
+        return
     elif awaiting == 'region':
         update_chat_config(chat_id, {'region': text.strip().lower()})
         await update.message.reply_text(f'✅ Регіон змінено на: {text.strip()}')
