@@ -140,6 +140,9 @@ PHRASES_POWER_GONE_VARIATIONS = [
     "Інтервал зі світлом:"
 ]
 
+# Button text constants
+CANCEL_BUTTON_TEXT = '❌ Скасувати'
+
 # Menu keyboards - base keyboards without dynamic buttons
 MAIN_MENU_KEYBOARD_BASE = [
     ['📊 Статус', '💡 Моніторинг'],
@@ -173,7 +176,7 @@ _config_lock = threading.Lock()
 
 # Rate limiting
 from collections import defaultdict
-_user_command_times: Dict[int, list] = defaultdict(list)
+_user_command_times: Dict[int, List[float]] = defaultdict(list)
 _rate_limit_lock = threading.Lock()
 
 
@@ -1291,7 +1294,7 @@ async def handle_text_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = update.message.text
     
     # Check for cancel button first
-    if text == '❌ Скасувати':
+    if text == CANCEL_BUTTON_TEXT:
         await cancel(update, context)
         return
     
